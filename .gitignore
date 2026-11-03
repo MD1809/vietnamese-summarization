@@ -1,0 +1,59 @@
+# Local project documentation
+/docs/
+
+# Datasets and generated artifacts
+/data/raw/
+/data/processed/
+/data/tokenized/
+/checkpoints/
+/outputs/
+
+# Model weights and training state
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+pytorch_model*.bin
+optimizer*.bin
+training_args.bin
+
+# Python environments and generated files
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+/build/
+/dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Notebook and download caches
+.ipynb_checkpoints/
+.cache/
+
+# Credentials and local environment settings
+.env
+.env.*
+!.env.example
+.aws/
+credentials.json
+service-account*.json
+*.pem
+*.key
+
+# Editor and operating system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*.tmp
+*.log
