@@ -87,3 +87,38 @@ def save_source_manifest(
         encoding="utf-8",
     )
     return manifest
+
+
+def convert_wikilingua_sections(rows):
+    pairs = []
+    fields = ["section_name", "document", "summary"]
+
+    for row_index, row in enumerate(rows):
+        url = row.get("url")
+        article = row.get("article")
+        location = f"row={row_index}, url={url}"
+
+        if not isinstance(article, dict):
+            raise ValueError(f"Expected parallel article lists: {location}")
+
+        for field in fields:
+            if not isinstance(article.get(field), list):
+                raise ValueError(f"Expected article.{field} to be a list: {location}")
+
+        section_count = len(article["document"])
+        for field in fields:
+            if len(article[field]) != section_count:
+                raise ValueError(f"Article list lengths do not match: {location}")
+
+        for section_index in range(section_count):
+            pair = {
+                "source_row_index": row_index,
+                "source_section_index": section_index,
+                "url": url,
+                "section_name": article["section_name"][section_index],
+                "document": article["document"][section_index],
+                "summary": article["summary"][section_index],
+            }
+            pairs.append(pair)
+
+    return pairs
