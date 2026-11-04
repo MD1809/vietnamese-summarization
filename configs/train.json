@@ -1,0 +1,33 @@
+{
+  "config_status": "initial",
+  "model": {
+    "id": "VietAI/vit5-base",
+    "revision": "2209a38d735ede63e88f5aa52bcdc11a05a37b85"
+  },
+  "dataset": {
+    "id": "esdurmus/wiki_lingua",
+    "revision": "ea3db3510cbd34d0f8dc612419ae40e4732f3b40",
+    "language": "vietnamese"
+  },
+  "paths": {
+    "train_file": "data/processed/train.jsonl",
+    "validation_file": "data/processed/validation.jsonl",
+    "test_file": "data/processed/test.jsonl",
+    "output_dir": "outputs",
+    "checkpoint_dir": "checkpoints"
+  },
+  "seed": 42,
+  "max_source_length": 512,
+  "max_target_length": 128,
+  "batch_size": 1,
+  "gradient_accumulation_steps": 8,
+  "learning_rate": 0.00005,
+  "num_epochs": 3,
+  "optimizer": "AdamW",
+  "weight_decay": 0.01,
+  "precision": "fp32",
+  "checkpoint_selection": {
+    "metric": "validation_loss",
+    "mode": "min"
+  }
+}
