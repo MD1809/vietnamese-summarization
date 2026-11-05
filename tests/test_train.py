@@ -12,7 +12,10 @@ from src.train import (
     check_forward_batch,
     check_optimization_step,
     create_optimizer,
+    create_small_sample_batches,
     load_vit5_model,
+    measure_small_sample_loss,
+    run_small_sample_check,
 )
 
 
@@ -327,6 +330,81 @@ class OptimizationTests(unittest.TestCase):
             foreach=False,
         )
         self.assertIs(optimizer, torch_module.optim.AdamW.return_value)
+
+
+class SmallSampleTests(unittest.TestCase):
+    def batches(self):
+        batches = []
+        for index in range(16):
+            batches.append({
+                "sample_ids": ["sample-" + str(index)],
+                "model_inputs": {
+                    "input_ids": TensorExample([[10, 11, 1]]),
+                    "labels": TensorExample([[8, 9, 1]]),
+                },
+            })
+        return batches
+
+    def test_selection_is_repeatable_distinct_and_not_first_16(self):
+        dataset = Mock()
+        dataset.__len__ = Mock(return_value=2000)
+        selected_indices = []
+        with patch("src.tokenization.create_data_loader", return_value=["batch"]) as loader:
+            for repetition in range(2):
+                result = create_small_sample_batches(dataset, "tokenizer", seed=42)
+                selected_indices.append(dataset.select.call_args.args[0])
+                self.assertEqual(result, ["batch"])
+            loader.assert_called_with(
+                dataset.select.return_value, "tokenizer", batch_size=1, shuffle=False, seed=42,
+            )
+        self.assertEqual(selected_indices[0], selected_indices[1])
+        self.assertEqual(len(set(selected_indices[0])), 16)
+        self.assertNotEqual(selected_indices[0], list(range(16)))
+
+    def test_measurement_weights_loss_by_valid_target_tokens(self):
+        reports = [
+            {"loss": 2.0, "valid_target_token_count": 1},
+            {"loss": 4.0, "valid_target_token_count": 3},
+        ]
+        with patch("src.train.check_forward_batch", side_effect=reports):
+            loss = measure_small_sample_loss(Mock(), ["batch-a", "batch-b"])
+        self.assertEqual(loss, 3.5)
+
+    def test_three_passes_reuse_same_samples_and_keep_only_scalar_losses(self):
+        batches = self.batches()
+        model = Mock()
+        with patch("src.train.measure_small_sample_loss", side_effect=[8.0, 6.0, 5.0, 4.0]):
+            with patch("src.train.check_optimization_step", return_value={"loss_before_update": 7.0}) as step:
+                with patch("builtins.print"):
+                    report = run_small_sample_check(model, batches, Mock())
+        self.assertEqual(step.call_count, 48)
+        for index, call in enumerate(step.call_args_list):
+            self.assertIs(call.args[1], batches[index % 16])
+        self.assertEqual(report["optimizer_steps"], 48)
+        self.assertEqual(report["loss_decrease_percent"], 50.0)
+        self.assertTrue(report["loss_decreased"])
+        self.assertFalse(report["validation_used"])
+        self.assertFalse(report["test_content_read"])
+        self.assertEqual(len(report["history"]), 3)
+        model.train.assert_called_once_with()
+
+    def test_no_decrease_is_reported_without_claiming_success(self):
+        with patch("src.train.measure_small_sample_loss", side_effect=[8.0, 8.5, 9.0, 9.5]):
+            with patch("src.train.check_optimization_step", return_value={"loss_before_update": 9.0}):
+                with patch("builtins.print"):
+                    report = run_small_sample_check(Mock(), self.batches(), Mock())
+        self.assertFalse(report["loss_decreased"])
+        self.assertLess(report["loss_decrease_percent"], 0)
+
+    def test_duplicate_samples_are_rejected_before_measurement_or_learning(self):
+        batches = self.batches()
+        batches[-1]["sample_ids"] = batches[0]["sample_ids"]
+        with patch("src.train.measure_small_sample_loss") as measure:
+            with patch("src.train.check_optimization_step") as step:
+                with self.assertRaisesRegex(ValueError, "distinct"):
+                    run_small_sample_check(Mock(), batches, Mock())
+        measure.assert_not_called()
+        step.assert_not_called()
 
 
 if __name__ == "__main__":

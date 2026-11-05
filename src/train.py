@@ -232,3 +232,96 @@ def check_optimization_step(model, batch, optimizer):
         "gradient_accumulation_applied": False,
         "test_content_read": False,
     }
+
+
+def create_small_sample_batches(train_dataset, tokenizer, seed=42):
+    import random
+    from src.tokenization import create_data_loader
+
+    if len(train_dataset) < 16:
+        raise ValueError("G4.3 requires at least 16 training samples")
+    random_generator = random.Random(seed)
+    indices = random_generator.sample(range(len(train_dataset)), 16)
+    selected_dataset = train_dataset.select(indices)
+    loader = create_data_loader(
+        selected_dataset,
+        tokenizer,
+        batch_size=1,
+        shuffle=False,
+        seed=seed,
+    )
+    return list(loader)
+
+
+def measure_small_sample_loss(model, batches):
+    total_loss = 0.0
+    total_tokens = 0
+    for batch in batches:
+        report = check_forward_batch(model, batch)
+        token_count = report["valid_target_token_count"]
+        total_loss = total_loss + report["loss"] * token_count
+        total_tokens = total_tokens + token_count
+    if total_tokens == 0:
+        raise ValueError("Cannot measure loss without valid target tokens")
+    return total_loss / total_tokens
+
+
+def run_small_sample_check(model, batches, optimizer):
+    if len(batches) != 16:
+        raise ValueError("G4.3 expects exactly 16 fixed batches")
+    sample_ids = []
+    source_lengths = []
+    target_lengths = []
+    for batch in batches:
+        if len(batch["sample_ids"]) != 1:
+            raise ValueError("G4.3 expects one sample per batch")
+        sample_ids.append(batch["sample_ids"][0])
+        source_lengths.append(batch["model_inputs"]["input_ids"].shape[1])
+        target_lengths.append(batch["model_inputs"]["labels"].shape[1])
+    if len(set(sample_ids)) != 16:
+        raise ValueError("G4.3 requires 16 distinct sample IDs")
+
+    optimizer.zero_grad(set_to_none=True)
+    initial_loss = measure_small_sample_loss(model, batches)
+    if initial_loss <= 0:
+        raise ValueError("Initial loss must be positive to compare relative decrease")
+    print("Loss ban đầu:", initial_loss, flush=True)
+    history = []
+    optimization_steps = 0
+    for pass_index in range(3):
+        training_step_losses = []
+        for batch in batches:
+            step_report = check_optimization_step(model, batch, optimizer)
+            training_step_losses.append(step_report["loss_before_update"])
+            optimization_steps = optimization_steps + 1
+        optimizer.zero_grad(set_to_none=True)
+        measured_loss = measure_small_sample_loss(model, batches)
+        history.append({
+            "pass": pass_index + 1,
+            "optimizer_steps_completed": optimization_steps,
+            "training_step_losses": training_step_losses,
+            "measured_train_loss": measured_loss,
+        })
+        print("Lượt:", pass_index + 1, "Loss đo lại:", measured_loss, flush=True)
+
+    final_loss = history[-1]["measured_train_loss"]
+    model.train()
+    return {
+        "sample_ids": sample_ids,
+        "sample_count": len(sample_ids),
+        "source_lengths": source_lengths,
+        "target_lengths": target_lengths,
+        "passes": 3,
+        "optimizer_steps": optimization_steps,
+        "initial_measured_train_loss": initial_loss,
+        "history": history,
+        "final_measured_train_loss": final_loss,
+        "loss_decrease": initial_loss - final_loss,
+        "loss_decrease_percent": (initial_loss - final_loss) / initial_loss * 100,
+        "loss_decreased": final_loss < initial_loss,
+        "measurement_mode": "eval with no_grad on the same 16 train samples",
+        "finite_gradients_and_parameter_updates_check_passed": True,
+        "gradient_accumulation_applied": False,
+        "validation_used": False,
+        "test_content_read": False,
+    }
