@@ -234,14 +234,14 @@ def check_optimization_step(model, batch, optimizer):
     }
 
 
-def create_small_sample_batches(train_dataset, tokenizer, seed=42):
+def create_small_sample_batches(train_dataset, tokenizer, seed=42, sample_count=16):
     import random
     from src.tokenization import create_data_loader
 
-    if len(train_dataset) < 16:
-        raise ValueError("G4.3 requires at least 16 training samples")
+    if type(sample_count) is not int or sample_count <= 0 or len(train_dataset) < sample_count:
+        raise ValueError("Requested sample count must be positive and fit the training dataset")
     random_generator = random.Random(seed)
-    indices = random_generator.sample(range(len(train_dataset)), 16)
+    indices = random_generator.sample(range(len(train_dataset)), sample_count)
     selected_dataset = train_dataset.select(indices)
     loader = create_data_loader(
         selected_dataset,
@@ -841,4 +841,165 @@ def run_resource_check(model, batches, optimizer, tokenizer, config_path="config
         "test_content_read": False,
         "timing_scope": "synchronized optimization step including transfers and gradient/update diagnostics; excludes tokenization, DataLoader and validation",
         "configuration_decision": "pending_review",
+    }
+
+
+def train_accumulated_group(model, batches, optimizer, config_path="configs/train.json"):
+    import math
+    import torch
+
+    config = load_train_config(config_path)
+    if len(batches) == 0 or len(batches) > config["gradient_accumulation_steps"]:
+        raise ValueError("Accumulation group must contain 1 to the configured number of batches")
+    max_grad_norm = config.get("max_grad_norm")
+    if type(max_grad_norm) not in [int, float] or not math.isfinite(max_grad_norm) or max_grad_norm <= 0:
+        raise ValueError("Accumulation requires a finite positive max_grad_norm")
+    parameter = next(model.parameters())
+    if parameter.dtype != torch.float32 or config["precision"] != "fp32":
+        raise ValueError("Accumulation expects the approved fp32 configuration")
+    token_counts = []
+    sample_ids = []
+    for batch in batches:
+        inputs = batch["model_inputs"]
+        if set(inputs) != {"input_ids", "attention_mask", "labels"}:
+            raise ValueError("Accumulation expects source IDs, mask and original labels only")
+        if inputs["input_ids"].shape[0] != 1 or inputs["labels"].shape[0] != 1 or len(batch["sample_ids"]) != 1:
+            raise ValueError("Accumulation expects physical batch size 1")
+        count = 0
+        for row in inputs["labels"].tolist():
+            for token_id in row:
+                if token_id != -100:
+                    count = count + 1
+        if count == 0:
+            raise ValueError("Each accumulation batch requires valid target tokens")
+        token_counts.append(count)
+        sample_ids.extend(batch["sample_ids"])
+    total_tokens = sum(token_counts)
+    model.train()
+    optimizer.zero_grad(set_to_none=True)
+    losses = []
+    loss_weights = []
+    for index, batch in enumerate(batches):
+        model_inputs = {}
+        for field in ["input_ids", "attention_mask", "labels"]:
+            model_inputs[field] = batch["model_inputs"][field].to(parameter.device)
+        outputs = model(
+            input_ids=model_inputs["input_ids"],
+            attention_mask=model_inputs["attention_mask"],
+            labels=model_inputs["labels"],
+            return_dict=True,
+            use_cache=False,
+        )
+        loss = outputs.loss
+        if loss is None or len(loss.shape) != 0 or not loss.requires_grad:
+            raise ValueError("Accumulation requires a scalar loss with a gradient graph")
+        if not torch.isfinite(loss).all().item():
+            raise ValueError("Accumulation loss contains NaN or Inf")
+        if model_inputs["labels"].tolist() != batch["model_inputs"]["labels"].tolist():
+            raise ValueError("Original labels changed during accumulation")
+        weight = token_counts[index] / total_tokens
+        losses.append(loss.item())
+        loss_weights.append(weight)
+        scaled_loss = loss * weight
+        scaled_loss.backward()
+        del outputs, loss, scaled_loss, model_inputs
+
+    selected_parameter = None
+    selected_name = None
+    for name, current_parameter in model.named_parameters():
+        if current_parameter.grad is None:
+            continue
+        if not torch.isfinite(current_parameter.grad).all().item():
+            raise ValueError("Accumulated gradient contains NaN or Inf: " + name)
+        if current_parameter.grad.detach().abs().max().item() == 0:
+            continue
+        if selected_parameter is None or current_parameter.numel() < selected_parameter.numel():
+            selected_parameter = current_parameter
+            selected_name = name
+    if selected_parameter is None:
+        raise ValueError("No parameter has a nonzero accumulated gradient")
+    norm_before = torch.nn.utils.clip_grad_norm_(
+        model.parameters(), max_norm=max_grad_norm, error_if_nonfinite=True, foreach=False,
+    ).item()
+    squared_norm_after = 0.0
+    for current_parameter in model.parameters():
+        if current_parameter.grad is not None:
+            norm = current_parameter.grad.detach().norm(2).item()
+            squared_norm_after = squared_norm_after + norm**2
+    norm_after = math.sqrt(squared_norm_after)
+    if not math.isfinite(norm_after) or norm_after > max_grad_norm + 0.00001:
+        raise ValueError("Gradient norm after clipping exceeds the configured limit")
+    parameter_before = selected_parameter.detach().clone()
+    optimizer.step()
+    parameter_after = selected_parameter.detach()
+    if not torch.isfinite(parameter_after).all().item():
+        raise ValueError("Updated parameter contains NaN or Inf")
+    change = (parameter_after - parameter_before).abs().max().item()
+    if change == 0:
+        raise ValueError("Selected parameter did not change after accumulated update")
+    group_loss = 0.0
+    for index in range(len(losses)):
+        group_loss = group_loss + losses[index] * loss_weights[index]
+    return {
+        "sample_ids": sample_ids,
+        "microbatch_count": len(batches),
+        "valid_target_token_counts": token_counts,
+        "total_valid_target_tokens": total_tokens,
+        "microbatch_losses": losses,
+        "loss_weights": loss_weights,
+        "token_weighted_group_loss": group_loss,
+        "gradient_norm_before_clipping": norm_before,
+        "gradient_norm_after_clipping": norm_after,
+        "max_grad_norm": max_grad_norm,
+        "clipping_reduced_norm": norm_before > max_grad_norm,
+        "selected_parameter": selected_name,
+        "parameter_change_max_abs": change,
+        "finite_gradient_check_passed": True,
+        "clipping_check_passed": True,
+        "parameter_changed_check_passed": True,
+        "optimizer_steps": 1,
+        "original_labels_check_passed": True,
+    }
+
+
+def run_accumulation_check(model, batches, optimizer, config_path="configs/train.json"):
+    config = load_train_config(config_path)
+    if len(batches) != 17:
+        raise ValueError("Accumulation check requires 17 fixed training batches")
+    sample_ids = []
+    for batch in batches:
+        sample_ids.extend(batch["sample_ids"])
+    if len(sample_ids) != 17 or len(set(sample_ids)) != 17:
+        raise ValueError("Accumulation check requires 17 distinct training samples")
+    if len(optimizer.state) != 0:
+        raise ValueError("Accumulation check must start with a fresh optimizer")
+    group_size = config["gradient_accumulation_steps"]
+    groups = []
+    global_step = 0
+    for start in range(0, len(batches), group_size):
+        group = batches[start:start + group_size]
+        report = train_accumulated_group(model, group, optimizer, config_path)
+        global_step = global_step + 1
+        report["global_step"] = global_step
+        groups.append(report)
+        print("Nhóm:", global_step, "Số batch:", len(group), flush=True)
+    optimizer_step_values = set()
+    for state in optimizer.state.values():
+        optimizer_step_values.add(int(state["step"].item()))
+    if optimizer_step_values != {global_step}:
+        raise ValueError("Optimizer state step count does not match accumulated updates")
+    return {
+        "sample_ids": sample_ids,
+        "microbatch_count": len(batches),
+        "gradient_accumulation_steps": group_size,
+        "groups": groups,
+        "optimizer_steps": global_step,
+        "optimizer_state_step_values": sorted(optimizer_step_values),
+        "loss_normalization": "valid target tokens across the current accumulation group",
+        "max_grad_norm": config["max_grad_norm"],
+        "partial_last_group_check_passed": len(groups[-1]["sample_ids"]) == len(batches) % group_size,
+        "optimizer_boundary_check_passed": True,
+        "model_device": str(next(model.parameters()).device),
+        "model_dtype": str(next(model.parameters()).dtype),
+        "test_content_read": False,
     }

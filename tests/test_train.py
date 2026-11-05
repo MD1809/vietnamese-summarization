@@ -26,6 +26,8 @@ from src.train import (
     restore_random_state,
     run_small_sample_check,
     run_resource_check,
+    run_accumulation_check,
+    train_accumulated_group,
     validate_model,
     save_training_checkpoint,
 )
@@ -851,6 +853,113 @@ class ResourceCheckTests(unittest.TestCase):
         self.assertEqual(report["status"], "oom")
         self.assertFalse(report["limit_batch_check_passed"])
         self.assertIsNone(report["subsequent_real_step_mean_seconds"])
+
+
+class AccumulationTests(unittest.TestCase):
+    def examples(self, counts):
+        torch_module, model, batch, optimizer, parameter, loss, events = OptimizationTests().examples()
+
+        def parameters():
+            return iter([parameter])
+
+        model.parameters.side_effect = parameters
+        parameter.grad.detach.return_value.norm.return_value.item.return_value = 0.5
+        clip = Mock()
+        clip.return_value.item.return_value = 2.0
+        torch_module.nn = types.SimpleNamespace(utils=types.SimpleNamespace(clip_grad_norm_=clip))
+        events.attach_mock(clip, "clip")
+        batches = []
+        losses = []
+        for index, count in enumerate(counts):
+            current = copy.deepcopy(batch)
+            current["sample_ids"] = ["sample-" + str(index)]
+            current["model_inputs"]["labels"] = TensorExample([[8]*count + [-100]])
+            batches.append(current)
+            current_loss = Mock()
+            current_loss.shape = ()
+            current_loss.finite = True
+            current_loss.requires_grad = True
+            current_loss.item.return_value = 2.0 + index
+            current_loss.__mul__ = Mock(return_value=Mock())
+            events.attach_mock(current_loss.__mul__.return_value.backward, "backward_" + str(index))
+            losses.append(current_loss)
+        outputs = []
+        for current_loss in losses:
+            outputs.append(types.SimpleNamespace(loss=current_loss))
+        model.side_effect = outputs
+        return torch_module, model, batches, optimizer, parameter, losses, events
+
+    def test_group_uses_token_weights_and_only_one_update_after_all_backwards(self):
+        torch_module, model, batches, optimizer, parameter, losses, events = self.examples([1, 3])
+        with patch.dict(sys.modules, {"torch": torch_module}):
+            report = train_accumulated_group(model, batches, optimizer)
+        losses[0].__mul__.assert_called_once_with(0.25)
+        losses[1].__mul__.assert_called_once_with(0.75)
+        self.assertEqual(report["token_weighted_group_loss"], 2.75)
+        operations = []
+        for call in events.mock_calls:
+            if call[0] in ["zero_grad", "backward_0", "backward_1", "clip", "step"]:
+                operations.append(call[0])
+        self.assertEqual(operations, ["zero_grad", "backward_0", "backward_1", "clip", "step"])
+        optimizer.zero_grad.assert_called_once_with(set_to_none=True)
+        optimizer.step.assert_called_once_with()
+        self.assertEqual(report["gradient_norm_after_clipping"], 0.5)
+        self.assertEqual(torch_module.nn.utils.clip_grad_norm_.call_args.kwargs["max_norm"], 1.0)
+
+    def test_single_batch_tail_is_not_divided_by_eight(self):
+        torch_module, model, batches, optimizer, parameter, losses, events = self.examples([3])
+        with patch.dict(sys.modules, {"torch": torch_module}):
+            report = train_accumulated_group(model, batches, optimizer)
+        losses[0].__mul__.assert_called_once_with(1.0)
+        self.assertEqual(report["loss_weights"], [1.0])
+        self.assertEqual(report["optimizer_steps"], 1)
+
+    def test_nonfinite_loss_or_gradient_does_not_update_weights(self):
+        for kind in ["loss", "gradient"]:
+            torch_module, model, batches, optimizer, parameter, losses, events = self.examples([3])
+            if kind == "loss":
+                losses[0].item.return_value = float("nan")
+            else:
+                parameter.grad.finite = False
+            with patch.dict(sys.modules, {"torch": torch_module}):
+                with self.assertRaisesRegex(ValueError, "NaN or Inf"):
+                    train_accumulated_group(model, batches, optimizer)
+            optimizer.step.assert_not_called()
+
+    def test_invalid_norm_after_clipping_blocks_optimizer_step(self):
+        torch_module, model, batches, optimizer, parameter, losses, events = self.examples([3])
+        parameter.grad.detach.return_value.norm.return_value.item.return_value = 2.0
+        with patch.dict(sys.modules, {"torch": torch_module}):
+            with self.assertRaisesRegex(ValueError, "after clipping"):
+                train_accumulated_group(model, batches, optimizer)
+        optimizer.step.assert_not_called()
+
+    def test_seventeen_samples_form_eight_eight_one_and_three_optimizer_steps(self):
+        batches = SmallSampleTests().batches()
+        extra = copy.deepcopy(batches[0])
+        extra["sample_ids"] = ["sample-16"]
+        batches.append(extra)
+        optimizer = types.SimpleNamespace(state={})
+        group_lengths = []
+
+        def train_group(model, group, optimizer, config_path):
+            group_lengths.append(len(group))
+            step = Mock()
+            step.item.return_value = len(group_lengths)
+            optimizer.state["example"] = {"step": step}
+            ids = []
+            for batch in group:
+                ids.extend(batch["sample_ids"])
+            return {"sample_ids": ids, "microbatch_count": len(group)}
+
+        with patch("src.train.train_accumulated_group", side_effect=train_group):
+            with patch("builtins.print"):
+                torch_module, model = ResourceCheckTests().examples()
+                report = run_accumulation_check(model, batches, optimizer)
+        self.assertEqual(group_lengths, [8, 8, 1])
+        self.assertEqual(report["optimizer_steps"], 3)
+        self.assertEqual(report["optimizer_state_step_values"], [3])
+        self.assertTrue(report["partial_last_group_check_passed"])
 
 
 if __name__ == "__main__":
