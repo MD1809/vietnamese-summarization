@@ -619,3 +619,268 @@ def restore_fixed_subsets(dataset_splits, split_manifest, subset_manifest):
 
 def save_subset_manifest(manifest, manifest_path):
     return save_split_manifest(manifest, manifest_path)
+
+
+def summarize_token_lengths(lengths):
+    if len(lengths) == 0:
+        raise ValueError("Cannot summarize empty token lengths")
+    ordered = sorted(lengths)
+    rank = (95 * len(ordered) + 99) // 100
+    return {
+        "mean": sum(ordered) / len(ordered),
+        "p95": ordered[rank - 1],
+        "max": ordered[-1],
+    }
+
+
+def _validate_export_subsets(subset_splits, subset_manifest):
+    all_pairs = []
+    for split_name in ["train", "validation", "test"]:
+        metadata = subset_manifest["splits"][split_name]
+        sample_ids = []
+        urls = set()
+        for pair in subset_splits[split_name]:
+            sample_ids.append(pair["id"])
+            urls.add(pair["group_id"])
+            all_pairs.append(pair)
+        if sample_ids != sorted(metadata["sample_ids"]):
+            raise ValueError("Export IDs/order do not match fixed subset manifest")
+        if len(sample_ids) != metadata["pair_count"]:
+            raise ValueError("Export count does not match fixed subset manifest")
+        if urls != set(metadata["group_ids"]):
+            raise ValueError("Export article groups do not match subset manifest")
+    validate_dataset_splits(subset_splits, all_pairs, [])
+
+
+def build_dataset_statistics(
+    subset_splits,
+    subset_manifest,
+    cleaning_report,
+    config_path="configs/train.json",
+):
+    from transformers import AutoTokenizer
+
+    config = load_train_config(config_path)
+    if subset_manifest["dataset"] != config["dataset"]:
+        raise ValueError("Statistics dataset does not match configuration")
+    if subset_manifest["seed"] != config["seed"]:
+        raise ValueError("Statistics seed does not match configuration")
+    _validate_export_subsets(subset_splits, subset_manifest)
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        config["model"]["id"],
+        revision=config["model"]["revision"],
+        use_fast=False,
+    )
+    document_lengths = []
+    summary_lengths = []
+    for pair in subset_splits["train"]:
+        encoded_document = tokenizer(
+            text=pair["document"],
+            add_special_tokens=True,
+            padding=False,
+            truncation=False,
+            return_attention_mask=False,
+            verbose=False,
+        )
+        encoded_summary = tokenizer(
+            text_target=pair["summary"],
+            add_special_tokens=True,
+            padding=False,
+            truncation=False,
+            return_attention_mask=False,
+            verbose=False,
+        )
+        document_lengths.append(len(encoded_document["input_ids"]))
+        summary_lengths.append(len(encoded_summary["input_ids"]))
+
+    split_counts = {}
+    for split_name in ["train", "validation", "test"]:
+        metadata = subset_manifest["splits"][split_name]
+        split_counts[split_name] = {
+            "pair_count": metadata["pair_count"],
+            "article_count": metadata["article_group_count"],
+        }
+    statistics = {
+        "dataset": config["dataset"].copy(),
+        "seed": config["seed"],
+        "subset_manifest_sha256": _split_manifest_fingerprint(subset_manifest),
+        "splits": split_counts,
+        "removed_counts_by_reason": cleaning_report["removed_counts_by_reason"].copy(),
+        "training_token_lengths": {
+            "sample_count": len(subset_splits["train"]),
+            "document": summarize_token_lengths(document_lengths),
+            "summary": summarize_token_lengths(summary_lengths),
+        },
+        "tokenization": {
+            "model_id": config["model"]["id"],
+            "revision": config["model"]["revision"],
+            "tokenizer_class": type(tokenizer).__name__,
+            "use_fast": False,
+            "add_special_tokens": True,
+            "padding": False,
+            "truncation": False,
+            "summary_input": "text_target",
+            "p95_method": "nearest rank: sorted_lengths[ceil(0.95 * N) - 1]",
+        },
+    }
+    return statistics
+
+
+def _prepared_file_path(project_root, relative_path):
+    relative = Path(relative_path)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("Prepared file path must stay relative to the project root")
+    root = Path(project_root).resolve()
+    path = (root / relative).resolve()
+    if not path.is_relative_to(root):
+        raise ValueError("Prepared file path escapes the project root")
+    return path
+
+
+def _read_prepared_jsonl(path):
+    rows = []
+    with path.open(encoding="utf-8") as data_file:
+        for line in data_file:
+            rows.append(json.loads(line))
+    return rows
+
+
+def verify_prepared_datasets(project_root, processed_manifest, subset_manifest):
+    if processed_manifest["subset_manifest_sha256"] != _split_manifest_fingerprint(subset_manifest):
+        raise ValueError("Processed data refers to a different subset manifest")
+    if processed_manifest["dataset"] != subset_manifest["dataset"]:
+        raise ValueError("Processed dataset identity does not match subset manifest")
+    if processed_manifest["seed"] != subset_manifest["seed"]:
+        raise ValueError("Processed seed does not match subset manifest")
+    splits = {}
+    for split_name in ["train", "validation", "test"]:
+        metadata = processed_manifest["files"][split_name]
+        path = _prepared_file_path(project_root, metadata["path"])
+        content = path.read_bytes()
+        if hashlib.sha256(content).hexdigest() != metadata["sha256"]:
+            raise ValueError(f"Prepared file changed: {split_name}")
+        if len(content) != metadata["byte_count"]:
+            raise ValueError(f"Prepared file size changed: {split_name}")
+        rows = _read_prepared_jsonl(path)
+        if len(rows) != metadata["pair_count"]:
+            raise ValueError(f"Prepared row count does not match manifest: {split_name}")
+        splits[split_name] = rows
+    _validate_export_subsets(splits, subset_manifest)
+
+    stats_metadata = processed_manifest["statistics"]
+    stats_path = _prepared_file_path(project_root, stats_metadata["path"])
+    if hashlib.sha256(stats_path.read_bytes()).hexdigest() != stats_metadata["sha256"]:
+        raise ValueError("Prepared statistics file changed")
+    lock = processed_manifest["test_lock"]
+    test_metadata = processed_manifest["files"]["test"]
+    if lock["locked"] is not True or lock["sha256"] != test_metadata["sha256"]:
+        raise ValueError("Test lock does not match prepared test file")
+    return {
+        "file_hash_check_passed": True,
+        "jsonl_readback_check_passed": True,
+        "fixed_sample_ids_check_passed": True,
+        "test_lock_check_passed": True,
+    }
+
+
+def export_prepared_datasets(
+    subset_splits,
+    subset_manifest,
+    statistics,
+    project_root,
+    config_path="configs/train.json",
+):
+    config = load_train_config(config_path)
+    _validate_export_subsets(subset_splits, subset_manifest)
+    subset_hash = _split_manifest_fingerprint(subset_manifest)
+    if statistics["subset_manifest_sha256"] != subset_hash:
+        raise ValueError("Statistics refers to a different subset manifest")
+    if statistics["dataset"] != config["dataset"] or subset_manifest["dataset"] != config["dataset"]:
+        raise ValueError("Prepared dataset does not match configuration")
+    if statistics["seed"] != config["seed"] or subset_manifest["seed"] != config["seed"]:
+        raise ValueError("Prepared seed does not match configuration")
+    if statistics["tokenization"]["model_id"] != config["model"]["id"]:
+        raise ValueError("Statistics tokenizer does not match configuration")
+    if statistics["tokenization"]["revision"] != config["model"]["revision"]:
+        raise ValueError("Statistics tokenizer revision does not match configuration")
+    for split_name in ["train", "validation", "test"]:
+        metadata = subset_manifest["splits"][split_name]
+        expected_counts = {
+            "pair_count": metadata["pair_count"],
+            "article_count": metadata["article_group_count"],
+        }
+        if statistics["splits"][split_name] != expected_counts:
+            raise ValueError("Statistics counts do not match fixed subset")
+
+    candidate_files = {}
+    file_metadata = {}
+    for split_name in ["train", "validation", "test"]:
+        relative_path = config["paths"][split_name + "_file"]
+        path = _prepared_file_path(project_root, relative_path)
+        lines = []
+        for pair in subset_splits[split_name]:
+            lines.append(json.dumps(pair, ensure_ascii=False, separators=(",", ":")))
+        content = ("\n".join(lines) + "\n").encode("utf-8")
+        if path in candidate_files:
+            raise ValueError("Prepared split paths must be different")
+        candidate_files[path] = content
+        file_metadata[split_name] = {
+            "path": relative_path,
+            "pair_count": len(subset_splits[split_name]),
+            "byte_count": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+
+    stats_relative = "data/manifests/wikilingua_statistics.json"
+    stats_path = _prepared_file_path(project_root, stats_relative)
+    stats_content = json.dumps(statistics, ensure_ascii=False, indent=2).encode("utf-8")
+    if stats_path in candidate_files:
+        raise ValueError("Statistics path must not match a split path")
+    candidate_files[stats_path] = stats_content
+    manifest_path = _prepared_file_path(project_root, "data/manifests/wikilingua_processed.json")
+    if manifest_path in candidate_files:
+        raise ValueError("Processed manifest path must not match a data path")
+
+    manifest = {
+        "dataset": config["dataset"].copy(),
+        "seed": config["seed"],
+        "subset_manifest": "data/manifests/wikilingua_subsets.json",
+        "subset_manifest_sha256": subset_hash,
+        "files": file_metadata,
+        "statistics": {
+            "path": stats_relative,
+            "sha256": hashlib.sha256(stats_content).hexdigest(),
+        },
+        "test_lock": {
+            "locked": True,
+            "sha256": file_metadata["test"]["sha256"],
+            "policy": "fixed IDs and content; do not use test for tuning; evaluate only in stage 6",
+        },
+    }
+    existing_manifest = None
+    if manifest_path.is_file():
+        existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        verify_prepared_datasets(project_root, existing_manifest, subset_manifest)
+        existing_metadata = existing_manifest.copy()
+        existing_metadata.pop("created_at_utc", None)
+        if existing_metadata != manifest:
+            raise ValueError("Prepared manifest is locked; refusing a different export")
+
+    for path in candidate_files:
+        if path.exists() and path.read_bytes() != candidate_files[path]:
+            raise ValueError(f"Refusing to overwrite different prepared content: {path.name}")
+    for path in candidate_files:
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(candidate_files[path])
+
+    for split_name in ["train", "validation", "test"]:
+        path = _prepared_file_path(project_root, file_metadata[split_name]["path"])
+        restored_rows = _read_prepared_jsonl(path)
+        if restored_rows != subset_splits[split_name]:
+            raise ValueError(f"JSONL readback differs from selected data: {split_name}")
+    verify_prepared_datasets(project_root, manifest, subset_manifest)
+    if existing_manifest is not None:
+        return existing_manifest
+    return save_split_manifest(manifest, manifest_path)

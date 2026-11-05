@@ -1,0 +1,51 @@
+{
+  "dataset": {
+    "id": "esdurmus/wiki_lingua",
+    "revision": "ea3db3510cbd34d0f8dc612419ae40e4732f3b40",
+    "language": "vietnamese"
+  },
+  "seed": 42,
+  "subset_manifest_sha256": "0b4018e264f7a86e45010a230c4ebbe5969b8743772022af4d17ae3e37efad57",
+  "splits": {
+    "train": {
+      "pair_count": 2000,
+      "article_count": 679
+    },
+    "validation": {
+      "pair_count": 201,
+      "article_count": 65
+    },
+    "test": {
+      "pair_count": 200,
+      "article_count": 65
+    }
+  },
+  "removed_counts_by_reason": {
+    "exact_duplicate_pair": 3,
+    "empty_document": 1
+  },
+  "training_token_lengths": {
+    "sample_count": 2000,
+    "document": {
+      "mean": 595.649,
+      "p95": 1315,
+      "max": 10351
+    },
+    "summary": {
+      "mean": 61.564,
+      "p95": 128,
+      "max": 711
+    }
+  },
+  "tokenization": {
+    "model_id": "VietAI/vit5-base",
+    "revision": "2209a38d735ede63e88f5aa52bcdc11a05a37b85",
+    "tokenizer_class": "T5Tokenizer",
+    "use_fast": false,
+    "add_special_tokens": true,
+    "padding": false,
+    "truncation": false,
+    "summary_input": "text_target",
+    "p95_method": "nearest rank: sorted_lengths[ceil(0.95 * N) - 1]"
+  }
+}

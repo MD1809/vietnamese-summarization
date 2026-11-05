@@ -1,9 +1,11 @@
 import json
 import copy
 import tempfile
+import sys
+import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from src.data import (
     clean_wikilingua_pairs,
@@ -14,6 +16,10 @@ from src.data import (
     save_subset_manifest,
     select_fixed_subsets,
     restore_fixed_subsets,
+    build_dataset_statistics,
+    export_prepared_datasets,
+    summarize_token_lengths,
+    verify_prepared_datasets,
     split_wikilingua_pairs,
     validate_dataset_splits,
 )
@@ -477,6 +483,147 @@ class FixedSubsetTests(unittest.TestCase):
             self.assertEqual(saved, loaded)
             self.assertEqual(restore_fixed_subsets(splits, parent, loaded), subsets)
             self.assertNotIn("created_at_utc", manifest)
+
+
+class PreparedDatasetTests(unittest.TestCase):
+    def make_data(self):
+        splits, parent = FixedSubsetTests().make_parent()
+        return select_fixed_subsets(
+            splits,
+            parent,
+            {"train": 7, "validation": 4, "test": 4},
+        )
+
+    def make_statistics(self, subsets, manifest):
+        def tokenize(**kwargs):
+            if "text" in kwargs:
+                text = kwargs["text"]
+            else:
+                text = kwargs["text_target"]
+            return {"input_ids": [1] * (len(text.split()) + 1)}
+
+        tokenizer = Mock(side_effect=tokenize)
+        auto = Mock()
+        auto.from_pretrained.return_value = tokenizer
+        module = types.SimpleNamespace(AutoTokenizer=auto)
+        cleaning = {"removed_counts_by_reason": {"empty_document": 1}}
+        with patch.dict(sys.modules, {"transformers": module}):
+            statistics = build_dataset_statistics(subsets, manifest, cleaning)
+        return statistics, tokenizer, auto
+
+    def test_nearest_rank_p95_and_mean(self):
+        self.assertEqual(summarize_token_lengths(list(range(1, 21))), {
+            "mean": 10.5, "p95": 19, "max": 20,
+        })
+        self.assertEqual(summarize_token_lengths(list(range(1, 2001)))["p95"], 1900)
+        self.assertEqual(summarize_token_lengths([5]), {"mean": 5.0, "p95": 5, "max": 5})
+        with self.assertRaises(ValueError):
+            summarize_token_lengths([])
+
+    def test_statistics_tokenizes_only_train_without_truncation(self):
+        subsets, manifest = self.make_data()
+        stats, tokenizer, auto = self.make_statistics(subsets, manifest)
+        config = json.loads(Path("configs/train.json").read_text(encoding="utf-8"))
+        auto.from_pretrained.assert_called_once_with(
+            config["model"]["id"], revision=config["model"]["revision"], use_fast=False,
+        )
+        self.assertEqual(tokenizer.call_count, len(subsets["train"]) * 2)
+        call_index = 0
+        for pair in subsets["train"]:
+            source = tokenizer.call_args_list[call_index].kwargs
+            target = tokenizer.call_args_list[call_index + 1].kwargs
+            self.assertEqual(source["text"], pair["document"])
+            self.assertEqual(target["text_target"], pair["summary"])
+            for kwargs in [source, target]:
+                self.assertIs(kwargs["padding"], False)
+                self.assertIs(kwargs["truncation"], False)
+                self.assertIs(kwargs["add_special_tokens"], True)
+                self.assertNotIn("max_length", kwargs)
+                self.assertNotIn("return_tensors", kwargs)
+            call_index = call_index + 2
+        self.assertEqual(stats["training_token_lengths"]["sample_count"], len(subsets["train"]))
+        self.assertEqual(stats["removed_counts_by_reason"], {"empty_document": 1})
+
+    def test_unicode_jsonl_roundtrip_and_idempotent_export(self):
+        subsets, manifest = self.make_data()
+        subsets["train"][0]["section_name"] = "Tiếng Việt\u2028giữ metadata"
+        stats, tokenizer, auto = self.make_statistics(subsets, manifest)
+        with tempfile.TemporaryDirectory() as directory:
+            processed = export_prepared_datasets(subsets, manifest, stats, directory)
+            repeated = export_prepared_datasets(subsets, manifest, stats, directory)
+            self.assertEqual(processed, repeated)
+            self.assertTrue(all(verify_prepared_datasets(directory, processed, manifest).values()))
+            path = Path(directory) / "data/processed/train.jsonl"
+            with path.open(encoding="utf-8") as stream:
+                rows = []
+                for line in stream:
+                    rows.append(json.loads(line))
+            self.assertEqual(rows, subsets["train"])
+            self.assertTrue(processed["test_lock"]["locked"])
+
+    def test_refuses_changed_test_and_preserves_other_files(self):
+        subsets, manifest = self.make_data()
+        stats, tokenizer, auto = self.make_statistics(subsets, manifest)
+        with tempfile.TemporaryDirectory() as directory:
+            processed = export_prepared_datasets(subsets, manifest, stats, directory)
+            root = Path(directory)
+            test_path = root / processed["files"]["test"]["path"]
+            train_path = root / processed["files"]["train"]["path"]
+            train_before = train_path.read_bytes()
+            test_path.write_bytes(test_path.read_bytes() + b" ")
+            damaged = test_path.read_bytes()
+            with self.assertRaisesRegex(ValueError, "Prepared file changed: test"):
+                export_prepared_datasets(subsets, manifest, stats, directory)
+            self.assertEqual(test_path.read_bytes(), damaged)
+            self.assertEqual(train_path.read_bytes(), train_before)
+
+    def test_refuses_different_initial_file_before_any_write(self):
+        subsets, manifest = self.make_data()
+        stats, tokenizer, auto = self.make_statistics(subsets, manifest)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "data/processed/test.jsonl"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"existing content")
+            with self.assertRaisesRegex(ValueError, "Refusing to overwrite"):
+                export_prepared_datasets(subsets, manifest, stats, directory)
+            self.assertEqual(path.read_bytes(), b"existing content")
+            self.assertFalse((path.parent / "train.jsonl").exists())
+
+    def test_locked_export_rejects_content_changes_with_same_ids(self):
+        subsets, manifest = self.make_data()
+        stats, tokenizer, auto = self.make_statistics(subsets, manifest)
+        with tempfile.TemporaryDirectory() as directory:
+            export_prepared_datasets(subsets, manifest, stats, directory)
+            subsets["test"][0]["summary"] = "different content"
+            with self.assertRaisesRegex(ValueError, "locked"):
+                export_prepared_datasets(subsets, manifest, stats, directory)
+
+    def test_rejects_wrong_ids_and_mismatched_statistics(self):
+        subsets, manifest = self.make_data()
+        stats, tokenizer, auto = self.make_statistics(subsets, manifest)
+        with tempfile.TemporaryDirectory() as directory:
+            wrong_stats = copy.deepcopy(stats)
+            wrong_stats["splits"]["train"]["pair_count"] = 999
+            with self.assertRaisesRegex(ValueError, "Statistics counts"):
+                export_prepared_datasets(subsets, manifest, wrong_stats, directory)
+            wrong_ids = copy.deepcopy(subsets)
+            wrong_ids["train"][0]["id"] = "foreign-sample"
+            with self.assertRaisesRegex(ValueError, "Export IDs"):
+                export_prepared_datasets(wrong_ids, manifest, stats, directory)
+
+    def test_verifier_detects_statistics_and_lock_changes(self):
+        subsets, manifest = self.make_data()
+        stats, tokenizer, auto = self.make_statistics(subsets, manifest)
+        with tempfile.TemporaryDirectory() as directory:
+            processed = export_prepared_datasets(subsets, manifest, stats, directory)
+            wrong_lock = copy.deepcopy(processed)
+            wrong_lock["test_lock"]["sha256"] = "wrong"
+            with self.assertRaisesRegex(ValueError, "Test lock"):
+                verify_prepared_datasets(directory, wrong_lock, manifest)
+            stats_path = Path(directory) / processed["statistics"]["path"]
+            stats_path.write_bytes(b"{}")
+            with self.assertRaisesRegex(ValueError, "statistics file changed"):
+                verify_prepared_datasets(directory, processed, manifest)
 
 
 if __name__ == "__main__":
