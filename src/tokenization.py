@@ -267,3 +267,93 @@ def tokenize_train_validation(
         )
         tokenized_splits[split_name] = tokenized
     return tokenized_splits, tokenizer
+
+
+def create_seq2seq_collator(tokenizer):
+    from transformers import DataCollatorForSeq2Seq
+
+    if tokenizer.pad_token_id is None:
+        raise ValueError("Tokenizer must define pad_token_id")
+    if tokenizer.padding_side != "right":
+        raise ValueError("This ViT5 pipeline expects right padding")
+    return DataCollatorForSeq2Seq(
+        tokenizer=tokenizer,
+        model=None,
+        padding=True,
+        label_pad_token_id=-100,
+        return_tensors="pt",
+    )
+
+
+def collate_tokenized_samples(samples, collator):
+    if len(samples) == 0:
+        raise ValueError("Cannot collate an empty batch")
+    features = []
+    for sample in samples:
+        feature = {}
+        for field in ["input_ids", "attention_mask", "labels"]:
+            feature[field] = list(sample[field])
+        features.append(feature)
+    return collator(features)
+
+
+def validate_padded_batch(batch, samples, tokenizer):
+    if len(samples) == 0:
+        raise ValueError("Cannot validate an empty batch")
+    if tokenizer.padding_side != "right":
+        raise ValueError("This ViT5 pipeline expects right padding")
+    longest_source = 0
+    longest_target = 0
+    for sample in samples:
+        longest_source = max(longest_source, len(sample["input_ids"]))
+        longest_target = max(longest_target, len(sample["labels"]))
+    source_shape = (len(samples), longest_source)
+    target_shape = (len(samples), longest_target)
+    if tuple(batch["input_ids"].shape) != source_shape:
+        raise ValueError("Source shape does not match dynamic batch length")
+    if tuple(batch["attention_mask"].shape) != source_shape:
+        raise ValueError("Attention mask shape does not match source shape")
+    if tuple(batch["labels"].shape) != target_shape:
+        raise ValueError("Label shape does not match dynamic target length")
+
+    input_rows = batch["input_ids"].tolist()
+    mask_rows = batch["attention_mask"].tolist()
+    label_rows = batch["labels"].tolist()
+    for index in range(len(samples)):
+        sample = samples[index]
+        source_length = len(sample["input_ids"])
+        target_length = len(sample["labels"])
+        if input_rows[index][:source_length] != sample["input_ids"]:
+            raise ValueError("Source tokens changed during collation")
+        if mask_rows[index][:source_length] != sample["attention_mask"]:
+            raise ValueError("Original attention mask changed during collation")
+        if label_rows[index][:target_length] != sample["labels"]:
+            raise ValueError("Target tokens changed during collation")
+        for position in range(source_length, longest_source):
+            if input_rows[index][position] != tokenizer.pad_token_id:
+                raise ValueError("Source padding must use pad_token_id")
+            if mask_rows[index][position] != 0:
+                raise ValueError("Attention mask must be zero at padded positions")
+        for position in range(source_length):
+            if mask_rows[index][position] != 1:
+                raise ValueError("Attention mask must be one at original token positions")
+        for position in range(target_length, longest_target):
+            if label_rows[index][position] != -100:
+                raise ValueError("Label padding must be -100")
+    return {
+        "dynamic_shape_check_passed": True,
+        "original_tokens_check_passed": True,
+        "source_padding_and_mask_check_passed": True,
+        "label_padding_check_passed": True,
+    }
+
+
+def decode_padded_labels(labels, tokenizer):
+    decoded = []
+    for row in labels.tolist():
+        token_ids = []
+        for token_id in row:
+            if token_id != -100:
+                token_ids.append(token_id)
+        decoded.append(tokenizer.decode(token_ids, skip_special_tokens=True))
+    return decoded

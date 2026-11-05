@@ -16,6 +16,10 @@ from src.tokenization import (
     tokenize_batch,
     tokenize_train_validation,
     validate_tokenized_split,
+    create_seq2seq_collator,
+    collate_tokenized_samples,
+    validate_padded_batch,
+    decode_padded_labels,
 )
 
 
@@ -343,6 +347,115 @@ class TokenizePairsTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "verified JSONL"):
                     tokenize_train_validation(root, config_path)
             tokenizer.assert_not_called()
+
+
+class ListTensor:
+    def __init__(self, rows):
+        self.rows = copy.deepcopy(rows)
+        self.shape = (len(rows), len(rows[0]))
+
+    def tolist(self):
+        return copy.deepcopy(self.rows)
+
+
+class PaddingTests(unittest.TestCase):
+    def examples(self):
+        samples = [
+            {"id": "a", "group_id": "A", "input_ids": [10, 11, 1], "attention_mask": [1, 1, 1], "labels": [80, 1]},
+            {"id": "b", "group_id": "B", "input_ids": [20, 1], "attention_mask": [1, 1], "labels": [90, 91, 1]},
+        ]
+        batch = {
+            "input_ids": ListTensor([[10, 11, 1], [20, 1, 0]]),
+            "attention_mask": ListTensor([[1, 1, 1], [1, 1, 0]]),
+            "labels": ListTensor([[80, 1, -100], [90, 91, 1]]),
+        }
+        tokenizer = types.SimpleNamespace(pad_token_id=0, padding_side="right")
+        return samples, batch, tokenizer
+
+    def test_collator_uses_dynamic_padding_and_no_model(self):
+        samples, batch, tokenizer = self.examples()
+        constructor = Mock(return_value="collator")
+        module = types.SimpleNamespace(DataCollatorForSeq2Seq=constructor)
+        with patch.dict(sys.modules, {"transformers": module}):
+            self.assertEqual(create_seq2seq_collator(tokenizer), "collator")
+        constructor.assert_called_once_with(
+            tokenizer=tokenizer, model=None, padding=True,
+            label_pad_token_id=-100, return_tensors="pt",
+        )
+
+    def test_collator_strips_metadata_and_copies_lists(self):
+        samples, batch, tokenizer = self.examples()
+        original = copy.deepcopy(samples)
+
+        def collator(features):
+            self.assertEqual(set(features[0]), {"input_ids", "attention_mask", "labels"})
+            features[0]["labels"].append(-100)
+            features[0]["input_ids"].append(0)
+            return batch
+
+        self.assertIs(collate_tokenized_samples(samples, collator), batch)
+        self.assertEqual(samples, original)
+
+    def test_dynamic_batch_shapes_and_padding_are_valid(self):
+        samples, batch, tokenizer = self.examples()
+        checks = validate_padded_batch(batch, samples, tokenizer)
+        self.assertTrue(all(checks.values()))
+
+    def test_rejects_bad_padding_masks_and_changed_tokens(self):
+        changes = [
+            ("input_ids", 1, 2, 9),
+            ("input_ids", 0, 0, 9),
+            ("attention_mask", 1, 2, 1),
+            ("attention_mask", 0, 0, 0),
+            ("labels", 0, 2, 0),
+            ("labels", 1, 0, -100),
+        ]
+        for field, row, column, value in changes:
+            with self.subTest(field=field, row=row, column=column):
+                samples, batch, tokenizer = self.examples()
+                batch[field].rows[row][column] = value
+                with self.assertRaises(ValueError):
+                    validate_padded_batch(batch, samples, tokenizer)
+
+    def test_rejects_static_max_padding_shape(self):
+        samples, batch, tokenizer = self.examples()
+        batch["input_ids"].shape = (2, 1024)
+        with self.assertRaisesRegex(ValueError, "dynamic batch length"):
+            validate_padded_batch(batch, samples, tokenizer)
+
+    def test_single_sample_does_not_need_padding(self):
+        samples, batch, tokenizer = self.examples()
+        single_batch = {}
+        for field in ["input_ids", "attention_mask", "labels"]:
+            single_batch[field] = ListTensor([samples[0][field]])
+        self.assertTrue(all(validate_padded_batch(single_batch, samples[:1], tokenizer).values()))
+
+    def test_decode_excludes_minus_100_without_changing_labels(self):
+        samples, batch, tokenizer = self.examples()
+        original = batch["labels"].tolist()
+        decoder = Mock()
+        decoder.decode.side_effect = ["first summary", "second summary"]
+        decoded = decode_padded_labels(batch["labels"], decoder)
+        self.assertEqual(decoded, ["first summary", "second summary"])
+        self.assertEqual(decoder.decode.call_args_list[0].args[0], [80, 1])
+        self.assertEqual(decoder.decode.call_args_list[1].args[0], [90, 91, 1])
+        self.assertIs(decoder.decode.call_args_list[0].kwargs["skip_special_tokens"], True)
+        self.assertEqual(batch["labels"].tolist(), original)
+
+    def test_empty_batch_and_unsupported_tokenizer_are_rejected(self):
+        samples, batch, tokenizer = self.examples()
+        with self.assertRaises(ValueError):
+            collate_tokenized_samples([], Mock())
+        with self.assertRaises(ValueError):
+            validate_padded_batch(batch, [], tokenizer)
+        constructor = Mock()
+        module = types.SimpleNamespace(DataCollatorForSeq2Seq=constructor)
+        with patch.dict(sys.modules, {"transformers": module}):
+            with self.assertRaises(ValueError):
+                create_seq2seq_collator(types.SimpleNamespace(pad_token_id=None, padding_side="right"))
+            with self.assertRaises(ValueError):
+                create_seq2seq_collator(types.SimpleNamespace(pad_token_id=0, padding_side="left"))
+        constructor.assert_not_called()
 
 
 if __name__ == "__main__":
