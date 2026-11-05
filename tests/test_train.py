@@ -15,14 +15,17 @@ from src.train import (
     capture_random_state,
     collect_run_source,
     create_optimizer,
+    create_resource_limit_batch,
     create_small_sample_batches,
     create_training_run,
     load_vit5_model,
     load_training_checkpoint,
     measure_small_sample_loss,
+    measure_resource_step,
     generate_checkpoint_probe,
     restore_random_state,
     run_small_sample_check,
+    run_resource_check,
     validate_model,
     save_training_checkpoint,
 )
@@ -747,6 +750,107 @@ class TrainingRunTests(unittest.TestCase):
             self.assertEqual(report["run_status"], "setup_only")
             self.assertFalse(report["data"]["test_content_read"])
             self.assertFalse(Path(report["paths"]["checkpoint_dir"]).exists())
+
+
+class ResourceCheckTests(unittest.TestCase):
+    def examples(self):
+        parameter = types.SimpleNamespace(
+            device=types.SimpleNamespace(type="cuda"), dtype="float32",
+        )
+        model = Mock()
+
+        def parameters():
+            return iter([parameter])
+
+        model.parameters.side_effect = parameters
+        cuda = types.SimpleNamespace(
+            synchronize=Mock(), reset_peak_memory_stats=Mock(), empty_cache=Mock(),
+            max_memory_allocated=Mock(return_value=4*1024**3),
+            max_memory_reserved=Mock(return_value=5*1024**3),
+            get_device_properties=Mock(return_value=types.SimpleNamespace(name="Test GPU", total_memory=16*1024**3)),
+            OutOfMemoryError=MemoryError,
+        )
+        return types.SimpleNamespace(cuda=cuda, float32="float32"), model
+
+    def test_padding_to_limit_keeps_tokens_masks_and_original_batch(self):
+        state, torch_module, model, batch = ForwardTests().examples()
+
+        def tensor(values, dtype):
+            return TensorExample(values)
+
+        torch_module.tensor = tensor
+        torch_module.long = "long"
+        original = copy.deepcopy(batch["model_inputs"]["labels"].tolist())
+        with patch.dict(sys.modules, {"torch": torch_module}):
+            result = create_resource_limit_batch(batch, types.SimpleNamespace(pad_token_id=0))
+        self.assertEqual(result["model_inputs"]["input_ids"].shape, (1, 1024))
+        self.assertEqual(result["model_inputs"]["labels"].shape, (1, 128))
+        self.assertEqual(result["model_inputs"]["attention_mask"].tolist()[0], [1, 1, 1] + [0]*1021)
+        self.assertEqual(result["model_inputs"]["labels"].tolist()[0][:5], original[0])
+        self.assertEqual(result["model_inputs"]["labels"].tolist()[0][5:], [-100]*123)
+        self.assertEqual(batch["model_inputs"]["labels"].tolist(), original)
+
+    def test_timing_waits_for_cuda_before_reading_end_time(self):
+        torch_module, model = self.examples()
+        batch = SmallSampleTests().batches()[0]
+        events = Mock()
+        events.attach_mock(torch_module.cuda.synchronize, "synchronize")
+        timer = Mock(side_effect=[10.0, 12.0])
+        events.attach_mock(timer, "timer")
+        step = Mock(return_value={"loss_before_update": 3.0, "valid_target_token_count": 3})
+        events.attach_mock(step, "step")
+        with patch.dict(sys.modules, {"torch": torch_module}):
+            with patch("time.perf_counter", timer):
+                with patch("src.train.check_optimization_step", step):
+                    report = measure_resource_step(model, batch, Mock())
+        self.assertEqual([call[0] for call in events.mock_calls], ["synchronize", "timer", "step", "synchronize", "timer"])
+        self.assertEqual(report["elapsed_seconds"], 2.0)
+        self.assertEqual(report["peak_allocated_bytes"], 4*1024**3)
+
+    def test_oom_is_reported_without_changing_configuration(self):
+        torch_module, model = self.examples()
+        with patch.dict(sys.modules, {"torch": torch_module}):
+            with patch("src.train.check_optimization_step", side_effect=MemoryError("test OOM")):
+                report = measure_resource_step(model, SmallSampleTests().batches()[0], Mock())
+        self.assertEqual(report["status"], "oom")
+        self.assertIn("test OOM", report["error"])
+        self.assertNotIn("gradient_and_update_check_passed", report)
+
+    def test_average_excludes_first_step_and_padded_limit_batch(self):
+        torch_module, model = self.examples()
+        optimizer = types.SimpleNamespace(state={})
+        records = []
+        for index in range(17):
+            elapsed = 2.0
+            if index == 0:
+                elapsed = 20.0
+            elif index == 16:
+                elapsed = 30.0
+            records.append({"status": "completed", "elapsed_seconds": elapsed, "peak_allocated_bytes": 4*1024**3, "peak_reserved_bytes": 5*1024**3})
+        with patch.dict(sys.modules, {"torch": torch_module}):
+            with patch("src.train.create_resource_limit_batch", return_value="limit-batch"):
+                with patch("src.train.measure_resource_step", side_effect=records) as measure:
+                    with patch("builtins.print"):
+                        report = run_resource_check(model, SmallSampleTests().batches(), optimizer, "tokenizer")
+        self.assertEqual(measure.call_count, 17)
+        self.assertEqual(report["first_step_seconds"], 20.0)
+        self.assertEqual(report["subsequent_real_step_mean_seconds"], 2.0)
+        self.assertEqual(report["subsequent_real_step_count"], 15)
+        self.assertTrue(report["limit_batch_check_passed"])
+        self.assertFalse(report["gradient_accumulation_applied"])
+
+    def test_oom_stops_before_remaining_samples_and_limit_batch(self):
+        torch_module, model = self.examples()
+        record = {"status": "oom", "elapsed_seconds": 1.0, "peak_allocated_bytes": 4*1024**3, "peak_reserved_bytes": 5*1024**3}
+        with patch.dict(sys.modules, {"torch": torch_module}):
+            with patch("src.train.create_resource_limit_batch"):
+                with patch("src.train.measure_resource_step", return_value=record) as measure:
+                    with patch("builtins.print"):
+                        report = run_resource_check(model, SmallSampleTests().batches(), types.SimpleNamespace(state={}), "tokenizer")
+        self.assertEqual(measure.call_count, 1)
+        self.assertEqual(report["status"], "oom")
+        self.assertFalse(report["limit_batch_check_passed"])
+        self.assertIsNone(report["subsequent_real_step_mean_seconds"])
 
 
 if __name__ == "__main__":

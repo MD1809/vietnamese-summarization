@@ -26,7 +26,9 @@
     "status": "approved",
     "selected_report": "data/manifests/wikilingua_truncation_1024_128.json",
     "reason": "Selected source limit 1024 with document truncation of 11.05% on train and 11.94% on validation; target limit is 128.",
-    "training_memory_verified": false
+    "training_memory_verified": true,
+    "training_memory_verification_scope": "Tesla T4 fp32 batch 1; 16 real train steps and one padded 1024/128 step completed; accumulation and full training loop not yet verified",
+    "training_memory_verification_report": "outputs/vit5_finetuning_20261105_165225_962607/resource_check.json"
   },
   "batch_size": 1,
   "gradient_accumulation_steps": 8,

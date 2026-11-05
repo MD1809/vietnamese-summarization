@@ -707,3 +707,138 @@ def create_training_run(project_root, drive_root, allow_uncommitted=False):
         if (output_dir / "source_snapshot" / relative_path).read_bytes() != content:
             raise ValueError("Untracked source snapshot readback failed")
     return report
+
+
+def create_resource_limit_batch(batch, tokenizer, config_path="configs/train.json"):
+    import torch
+
+    config = load_train_config(config_path)
+    inputs = batch["model_inputs"]
+    if inputs["input_ids"].shape[0] != 1 or inputs["labels"].shape[0] != 1:
+        raise ValueError("Resource limit check expects batch size 1")
+    source_ids = inputs["input_ids"][0].tolist()
+    source_mask = inputs["attention_mask"][0].tolist()
+    labels = inputs["labels"][0].tolist()
+    if len(source_ids) > config["max_source_length"] or len(labels) > config["max_target_length"]:
+        raise ValueError("Resource batch already exceeds configured token limits")
+    while len(source_ids) < config["max_source_length"]:
+        source_ids.append(tokenizer.pad_token_id)
+        source_mask.append(0)
+    while len(labels) < config["max_target_length"]:
+        labels.append(-100)
+    return {
+        "sample_ids": list(batch["sample_ids"]),
+        "group_ids": list(batch["group_ids"]),
+        "model_inputs": {
+            "input_ids": torch.tensor([source_ids], dtype=torch.long),
+            "attention_mask": torch.tensor([source_mask], dtype=torch.long),
+            "labels": torch.tensor([labels], dtype=torch.long),
+        },
+    }
+
+
+def measure_resource_step(model, batch, optimizer):
+    import time
+    import torch
+
+    device = next(model.parameters()).device
+    torch.cuda.synchronize(device)
+    torch.cuda.reset_peak_memory_stats(device)
+    started_at = time.perf_counter()
+    try:
+        step_report = check_optimization_step(model, batch, optimizer)
+        torch.cuda.synchronize(device)
+        elapsed = time.perf_counter() - started_at
+        report = {
+            "status": "completed",
+            "loss_before_update": step_report["loss_before_update"],
+            "gradient_and_update_check_passed": True,
+            "valid_target_token_count": step_report["valid_target_token_count"],
+        }
+    except torch.cuda.OutOfMemoryError as error:
+        elapsed = time.perf_counter() - started_at
+        report = {"status": "oom", "error": str(error)}
+    report["elapsed_seconds"] = elapsed
+    report["sample_ids"] = list(batch["sample_ids"])
+    report["input_shape"] = list(batch["model_inputs"]["input_ids"].shape)
+    report["labels_shape"] = list(batch["model_inputs"]["labels"].shape)
+    report["peak_allocated_bytes"] = torch.cuda.max_memory_allocated(device)
+    report["peak_reserved_bytes"] = torch.cuda.max_memory_reserved(device)
+    return report
+
+
+def run_resource_check(model, batches, optimizer, tokenizer, config_path="configs/train.json"):
+    import torch
+
+    config = load_train_config(config_path)
+    if len(batches) != 16:
+        raise ValueError("Resource check requires exactly 16 fixed train batches")
+    if len(optimizer.state) != 0:
+        raise ValueError("Resource check must start with a fresh optimizer")
+    parameter = next(model.parameters())
+    if parameter.device.type != "cuda" or parameter.dtype != torch.float32:
+        raise ValueError("Resource check expects a CUDA model in fp32")
+    sample_ids = []
+    longest_batch = batches[0]
+    for batch in batches:
+        sample_ids.extend(batch["sample_ids"])
+        if batch["model_inputs"]["input_ids"].shape[1] > longest_batch["model_inputs"]["input_ids"].shape[1]:
+            longest_batch = batch
+    if len(sample_ids) != 16 or len(set(sample_ids)) != 16:
+        raise ValueError("Resource check requires 16 distinct train sample IDs")
+    limit_batch = create_resource_limit_batch(longest_batch, tokenizer, config_path)
+    torch.cuda.empty_cache()
+    records = []
+    status = "completed"
+    for index, batch in enumerate(batches):
+        record = measure_resource_step(model, batch, optimizer)
+        record["phase"] = "real_train_sample"
+        record["step_index"] = index + 1
+        records.append(record)
+        print("Đo batch:", index + 1, "Trạng thái:", record["status"], flush=True)
+        if record["status"] != "completed":
+            status = record["status"]
+            break
+    limit_record = None
+    if status == "completed":
+        limit_record = measure_resource_step(model, limit_batch, optimizer)
+        limit_record["phase"] = "padded_limit_batch"
+        records.append(limit_record)
+        status = limit_record["status"]
+    steady_times = []
+    for record in records:
+        if record["phase"] == "real_train_sample" and record["step_index"] > 1 and record["status"] == "completed":
+            steady_times.append(record["elapsed_seconds"])
+    steady_mean = None
+    if len(steady_times) > 0:
+        steady_mean = sum(steady_times) / len(steady_times)
+    peak_allocated = 0
+    peak_reserved = 0
+    for record in records:
+        peak_allocated = max(peak_allocated, record["peak_allocated_bytes"])
+        peak_reserved = max(peak_reserved, record["peak_reserved_bytes"])
+    gpu = torch.cuda.get_device_properties(parameter.device)
+    return {
+        "status": status,
+        "sample_ids": sample_ids,
+        "records": records,
+        "first_step_seconds": records[0]["elapsed_seconds"],
+        "subsequent_real_step_count": len(steady_times),
+        "subsequent_real_step_mean_seconds": steady_mean,
+        "peak_allocated_gib": peak_allocated / 1024**3,
+        "peak_reserved_gib": peak_reserved / 1024**3,
+        "gpu_name": gpu.name,
+        "gpu_total_vram_gib": gpu.total_memory / 1024**3,
+        "model_device": str(parameter.device),
+        "model_dtype": str(parameter.dtype),
+        "configured_batch_size": config["batch_size"],
+        "max_source_length": config["max_source_length"],
+        "max_target_length": config["max_target_length"],
+        "configured_gradient_accumulation_steps": config["gradient_accumulation_steps"],
+        "gradient_accumulation_applied": False,
+        "amp_applied": False,
+        "limit_batch_check_passed": limit_record is not None and limit_record["status"] == "completed",
+        "test_content_read": False,
+        "timing_scope": "synchronized optimization step including transfers and gradient/update diagnostics; excludes tokenization, DataLoader and validation",
+        "configuration_decision": "pending_review",
+    }
