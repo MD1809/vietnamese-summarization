@@ -1,5 +1,6 @@
 import hashlib
 import json
+import random
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -245,3 +246,185 @@ def save_cleaning_manifest(report, manifest_path, config_path="configs/train.jso
         encoding="utf-8",
     )
     return manifest
+
+
+def _build_split_groups(pairs, shared_source_groups):
+    neighbors = {}
+    active_urls = set()
+    for pair in pairs:
+        url = pair["group_id"]
+        active_urls.add(url)
+        neighbors[url] = set()
+
+    for source_group in shared_source_groups:
+        urls = source_group["group_ids"]
+        for url in urls:
+            if url not in neighbors:
+                neighbors[url] = set()
+        if len(urls) > 0:
+            first_url = urls[0]
+            for url in urls[1:]:
+                neighbors[first_url].add(url)
+                neighbors[url].add(first_url)
+
+    visited = set()
+    groups = {}
+    for url in sorted(neighbors):
+        if url in visited:
+            continue
+        pending = [url]
+        visited.add(url)
+        component = []
+        has_active_url = False
+        while len(pending) > 0:
+            current = pending.pop()
+            component.append(current)
+            if current in active_urls:
+                has_active_url = True
+            for neighbor in sorted(neighbors[current]):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    pending.append(neighbor)
+        if has_active_url:
+            component.sort()
+            groups[component[0]] = component
+    return groups
+
+
+def validate_dataset_splits(splits, original_pairs, shared_source_groups):
+    split_names = ["train", "validation", "test"]
+    if set(splits) != set(split_names):
+        raise ValueError("Expected train, validation and test splits")
+
+    expected_ids = set()
+    for pair in original_pairs:
+        if pair["id"] in expected_ids:
+            raise ValueError("Duplicate input sample ID")
+        expected_ids.add(pair["id"])
+
+    seen_ids = set()
+    url_owners = {}
+    document_owners = {}
+    for split_name in split_names:
+        if len(splits[split_name]) == 0:
+            raise ValueError(f"Empty split: {split_name}")
+        for pair in splits[split_name]:
+            sample_id = pair["id"]
+            url = pair["group_id"]
+            document = pair["document"]
+            if sample_id in seen_ids:
+                raise ValueError("Sample ID appears more than once in splits")
+            seen_ids.add(sample_id)
+            if url != pair["url"]:
+                raise ValueError("group_id does not match original URL")
+            if url in url_owners and url_owners[url] != split_name:
+                raise ValueError("Article group overlaps across splits")
+            if document in document_owners and document_owners[document] != split_name:
+                raise ValueError("Normalized document overlaps across splits")
+            url_owners[url] = split_name
+            document_owners[document] = split_name
+
+    if seen_ids != expected_ids:
+        raise ValueError("Split sample IDs do not match input sample IDs")
+
+    linked_groups = _build_split_groups(original_pairs, shared_source_groups)
+    for group_id in linked_groups:
+        owners = set()
+        for url in linked_groups[group_id]:
+            if url in url_owners:
+                owners.add(url_owners[url])
+        if len(owners) > 1:
+            raise ValueError("Linked article groups are assigned to different splits")
+
+    return {
+        "sample_coverage_check_passed": True,
+        "unique_id_check_passed": True,
+        "group_overlap_check_passed": True,
+        "document_overlap_check_passed": True,
+        "linked_group_check_passed": True,
+    }
+
+
+def split_wikilingua_pairs(pairs, cleaning_report, config_path="configs/train.json"):
+    config = load_train_config(config_path)
+    if cleaning_report["retained_pair_count"] != len(pairs):
+        raise ValueError("Cleaning report count does not match input pairs")
+
+    shared_source_groups = cleaning_report["shared_source_groups"]
+    groups = _build_split_groups(pairs, shared_source_groups)
+    group_ids = sorted(groups)
+    generator = random.Random(config["seed"])
+    generator.shuffle(group_ids)
+    train_end = len(group_ids) * 80 // 100
+    validation_end = train_end + len(group_ids) * 10 // 100
+    if train_end == 0 or validation_end == train_end or validation_end == len(group_ids):
+        raise ValueError("Not enough independent groups for non-empty 80/10/10 splits")
+
+    split_group_ids = {
+        "train": group_ids[:train_end],
+        "validation": group_ids[train_end:validation_end],
+        "test": group_ids[validation_end:],
+    }
+    url_splits = {}
+    splits = {}
+    for split_name in split_group_ids:
+        splits[split_name] = []
+        for group_id in split_group_ids[split_name]:
+            for url in groups[group_id]:
+                url_splits[url] = split_name
+
+    pairs_by_id = {}
+    for pair in pairs:
+        if pair["id"] in pairs_by_id:
+            raise ValueError("Duplicate input sample ID")
+        pairs_by_id[pair["id"]] = pair
+    for sample_id in sorted(pairs_by_id):
+        pair = pairs_by_id[sample_id]
+        split_name = url_splits[pair["group_id"]]
+        splits[split_name].append(pair.copy())
+
+    checks = validate_dataset_splits(splits, pairs, shared_source_groups)
+    split_metadata = {}
+    for split_name in splits:
+        sample_ids = []
+        urls = set()
+        for pair in splits[split_name]:
+            sample_ids.append(pair["id"])
+            urls.add(pair["group_id"])
+        split_metadata[split_name] = {
+            "pair_count": len(sample_ids),
+            "article_group_count": len(urls),
+            "split_group_count": len(split_group_ids[split_name]),
+            "sample_ids": sample_ids,
+            "group_ids": sorted(urls),
+            "split_group_ids": sorted(split_group_ids[split_name]),
+        }
+
+    manifest = {
+        "dataset": config["dataset"].copy(),
+        "seed": config["seed"],
+        "input_pair_count": len(pairs),
+        "target_group_ratios": {"train": 0.8, "validation": 0.1, "test": 0.1},
+        "rules": {
+            "grouping": "original URL plus connected shared-source URL groups, including removed bridge URLs",
+            "ordering": "sort component identifiers, shuffle with random.Random(seed); sort sample IDs within each split",
+            "allocation": "floor(80% groups) train, floor(10% groups) validation, remainder test",
+            "component_id": "lexicographically smallest original URL in connected component",
+        },
+        "split_groups": groups,
+        "splits": split_metadata,
+        "checks": checks,
+    }
+    return splits, manifest
+
+
+def save_split_manifest(manifest, manifest_path):
+    output = manifest.copy()
+    output["created_at_utc"] = datetime.now(timezone.utc).isoformat()
+    output_path = Path(manifest_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(output, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return output

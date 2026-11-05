@@ -8,6 +8,9 @@ from src.data import (
     convert_wikilingua_sections,
     make_sample_id,
     save_cleaning_manifest,
+    save_split_manifest,
+    split_wikilingua_pairs,
+    validate_dataset_splits,
 )
 from src.preprocessing import normalize_pairs, normalize_text
 
@@ -236,6 +239,122 @@ class CleanPairsTests(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), manifest)
             self.assertEqual(manifest["dataset"]["id"], "esdurmus/wiki_lingua")
         self.assertEqual(clean_wikilingua_pairs([])[0], [])
+
+
+class SplitPairsTests(unittest.TestCase):
+    def make_pairs(self):
+        pairs = []
+        for index in range(20):
+            pairs.append({
+                "id": f"sample-{index:02d}",
+                "url": f"url-{index:02d}",
+                "group_id": f"url-{index:02d}",
+                "document": f"document-{index}",
+                "summary": f"summary-{index}",
+            })
+        return pairs
+
+    def make_report(self, pairs):
+        return {"retained_pair_count": len(pairs), "shared_source_groups": []}
+
+    def manual_splits(self, pairs):
+        return {"train": pairs[:18], "validation": pairs[18:19], "test": pairs[19:]}
+
+    def test_repeatability_input_order_and_coverage(self):
+        pairs = self.make_pairs()
+        report = self.make_report(pairs)
+        splits, manifest = split_wikilingua_pairs(pairs, report)
+        reversed_splits, reversed_manifest = split_wikilingua_pairs(list(reversed(pairs)), report)
+        self.assertEqual(splits, reversed_splits)
+        self.assertEqual(manifest, reversed_manifest)
+        self.assertEqual(len(splits["train"]), 16)
+        self.assertEqual(len(splits["validation"]), 2)
+        self.assertEqual(len(splits["test"]), 2)
+        self.assertEqual(manifest["seed"], 42)
+        for passed in manifest["checks"].values():
+            self.assertTrue(passed)
+
+    def test_sections_of_one_url_stay_together(self):
+        pairs = self.make_pairs()
+        extra = pairs[0].copy()
+        extra["id"] = "extra-section"
+        extra["document"] = "another section"
+        pairs.append(extra)
+        splits, manifest = split_wikilingua_pairs(pairs, self.make_report(pairs))
+        owner = None
+        for split_name in splits:
+            for pair in splits[split_name]:
+                if pair["group_id"] == "url-00":
+                    if owner is not None:
+                        self.assertEqual(split_name, owner)
+                    owner = split_name
+        self.assertEqual(manifest["input_pair_count"], 21)
+
+    def test_transitive_links_through_removed_url(self):
+        pairs = self.make_pairs()
+        report = self.make_report(pairs)
+        report["shared_source_groups"] = [
+            {"group_ids": ["url-00", "removed-bridge"]},
+            {"group_ids": ["removed-bridge", "url-01"]},
+        ]
+        splits, manifest = split_wikilingua_pairs(pairs, report)
+        owners = {}
+        for split_name in splits:
+            for pair in splits[split_name]:
+                owners[pair["group_id"]] = split_name
+        self.assertEqual(owners["url-00"], owners["url-01"])
+        self.assertEqual(manifest["split_groups"]["removed-bridge"], ["removed-bridge", "url-00", "url-01"])
+
+    def test_validator_rejects_document_leak(self):
+        pairs = self.make_pairs()
+        pairs[18]["document"] = pairs[0]["document"]
+        with self.assertRaisesRegex(ValueError, "document overlaps"):
+            validate_dataset_splits(self.manual_splits(pairs), pairs, [])
+
+    def test_validator_rejects_group_leak(self):
+        pairs = self.make_pairs()
+        pairs[18]["url"] = pairs[0]["url"]
+        pairs[18]["group_id"] = pairs[0]["group_id"]
+        with self.assertRaisesRegex(ValueError, "group overlaps"):
+            validate_dataset_splits(self.manual_splits(pairs), pairs, [])
+
+    def test_validator_rejects_linked_groups_across_splits(self):
+        pairs = self.make_pairs()
+        links = [{"group_ids": ["url-00", "removed"]}, {"group_ids": ["removed", "url-18"]}]
+        with self.assertRaisesRegex(ValueError, "Linked article groups"):
+            validate_dataset_splits(self.manual_splits(pairs), pairs, links)
+
+    def test_validator_rejects_missing_and_repeated_ids(self):
+        pairs = self.make_pairs()
+        splits = self.manual_splits(pairs)
+        splits["train"] = pairs[1:18]
+        with self.assertRaisesRegex(ValueError, "do not match"):
+            validate_dataset_splits(splits, pairs, [])
+        splits = self.manual_splits(pairs)
+        splits["test"] = [pairs[0]]
+        with self.assertRaisesRegex(ValueError, "more than once"):
+            validate_dataset_splits(splits, pairs, [])
+
+    def test_too_few_groups_and_report_mismatch(self):
+        pairs = self.make_pairs()[:3]
+        with self.assertRaisesRegex(ValueError, "Not enough independent groups"):
+            split_wikilingua_pairs(pairs, self.make_report(pairs))
+        with self.assertRaisesRegex(ValueError, "report count"):
+            split_wikilingua_pairs(pairs, self.make_report([]))
+
+    def test_split_manifest_round_trip(self):
+        pairs = self.make_pairs()
+        splits, manifest = split_wikilingua_pairs(pairs, self.make_report(pairs))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifests" / "splits.json"
+            saved = save_split_manifest(manifest, path)
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), saved)
+            self.assertIn("created_at_utc", saved)
+            self.assertNotIn("created_at_utc", manifest)
+        total = 0
+        for split_name in splits:
+            total = total + manifest["splits"][split_name]["pair_count"]
+        self.assertEqual(total, 20)
 
 
 if __name__ == "__main__":
