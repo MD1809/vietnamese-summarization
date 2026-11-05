@@ -36,6 +36,8 @@ from src.train import (
     load_last_checkpoint,
     train_checkpoint_test_epoch,
     preview_train_epoch_ids,
+    update_best_checkpoint,
+    load_best_checkpoint,
 )
 
 
@@ -1093,6 +1095,118 @@ class EpochCheckpointTests(unittest.TestCase):
         self.assertEqual(restored_progress, {"completed_epochs": 2, "global_step": 6})
         self.assertEqual(progress, {"completed_epochs": 1, "global_step": 3})
         self.assertEqual(report["optimizer_state_step_values"], [6])
+
+
+class BestCheckpointTests(unittest.TestCase):
+    def examples(self):
+        model = Mock()
+        tokenizer = Mock()
+        version = {"value": b"model-one"}
+
+        def save_model(path, safe_serialization):
+            (path / "config.json").write_text("{}", encoding="utf-8")
+            (path / "model.safetensors").write_bytes(version["value"])
+
+        def save_tokenizer(path):
+            (path / "tokenizer_config.json").write_text("{}", encoding="utf-8")
+            (path / "spiece.model").write_bytes(b"tokenizer")
+
+        model.save_pretrained.side_effect = save_model
+        tokenizer.save_pretrained.side_effect = save_tokenizer
+        return model, tokenizer, version
+
+    def validation(self, loss):
+        return {
+            "validation_loss": loss,
+            "sample_ids": ["validation-a", "validation-b"],
+            "sample_count": 2,
+            "valid_target_token_count": 7,
+            "complete_validation_in_order_check_passed": True,
+            "weights_unchanged_check_passed": True,
+        }
+
+    def test_first_save_and_strict_improvement_keep_correct_epoch_and_weights(self):
+        model, tokenizer, version = self.examples()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            progress, first = update_best_checkpoint(model, tokenizer, root, {"completed_epochs": 1, "global_step": 3}, self.validation(2.0))
+            self.assertTrue(first["updated"])
+            self.assertEqual(progress["best_epoch"], 1)
+            version["value"] = b"model-two"
+            progress["completed_epochs"] = 2
+            progress["global_step"] = 6
+            progress, second = update_best_checkpoint(model, tokenizer, root, progress, self.validation(1.0))
+            self.assertTrue(second["updated"])
+            self.assertEqual(progress["best_validation_loss"], 1.0)
+            self.assertEqual(progress["best_epoch"], 2)
+            self.assertEqual(progress["best_global_step"], 6)
+            self.assertEqual((root / "best/model.safetensors").read_bytes(), b"model-two")
+            self.assertFalse((root / "best_previous").exists())
+            self.assertFalse((root / "best_pending").exists())
+
+    def test_equal_or_higher_loss_preserves_files_and_original_best_progress(self):
+        model, tokenizer, version = self.examples()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            progress, first = update_best_checkpoint(model, tokenizer, root, {"completed_epochs": 1, "global_step": 3}, self.validation(2.0))
+            original_metadata = (root / "best/selection.json").read_bytes()
+            version["value"] = b"must-not-be-saved"
+            progress["completed_epochs"] = 2
+            progress["global_step"] = 6
+            for loss in [2.0, 3.0]:
+                progress, result = update_best_checkpoint(model, tokenizer, root, progress, self.validation(loss))
+                self.assertFalse(result["updated"])
+                self.assertEqual(progress["best_epoch"], 1)
+                self.assertEqual(progress["best_global_step"], 3)
+                self.assertEqual((root / "best/selection.json").read_bytes(), original_metadata)
+                self.assertEqual((root / "best/model.safetensors").read_bytes(), b"model-one")
+        self.assertEqual(model.save_pretrained.call_count, 1)
+
+    def test_nonfinite_or_negative_loss_is_rejected_before_saving(self):
+        model, tokenizer, version = self.examples()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for loss in [float("nan"), float("inf"), -1.0]:
+                with self.assertRaisesRegex(ValueError, "finite nonnegative"):
+                    update_best_checkpoint(model, tokenizer, root, {"completed_epochs": 1, "global_step": 3}, self.validation(loss))
+            self.assertFalse((root / "best").exists())
+        model.save_pretrained.assert_not_called()
+
+    def test_different_validation_split_is_rejected(self):
+        model, tokenizer, version = self.examples()
+        with tempfile.TemporaryDirectory() as directory:
+            progress, first = update_best_checkpoint(model, tokenizer, directory, {"completed_epochs": 1, "global_step": 3}, self.validation(2.0))
+            report = self.validation(1.0)
+            report["sample_ids"] = ["other-a", "other-b"]
+            with self.assertRaisesRegex(ValueError, "same configuration and validation split"):
+                update_best_checkpoint(model, tokenizer, directory, progress, report)
+
+    def test_failed_write_preserves_previous_best(self):
+        model, tokenizer, version = self.examples()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            progress, first = update_best_checkpoint(model, tokenizer, root, {"completed_epochs": 1, "global_step": 3}, self.validation(2.0))
+            model.save_pretrained.side_effect = OSError("write interrupted")
+            with self.assertRaisesRegex(OSError, "write interrupted"):
+                update_best_checkpoint(model, tokenizer, root, progress, self.validation(1.0))
+            saved = json.loads((root / "best/selection.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["validation_loss"], 2.0)
+            self.assertEqual((root / "best/model.safetensors").read_bytes(), b"model-one")
+
+    def test_best_loads_locally_in_fp32_for_evaluation(self):
+        model, tokenizer, version = self.examples()
+        modules, saved, loaded_model, loaded_tokenizer, optimizer = CheckpointTests().examples()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            update_best_checkpoint(model, tokenizer, root, {"completed_epochs": 1, "global_step": 3}, self.validation(2.0))
+            with patch.dict(sys.modules, modules):
+                result = load_best_checkpoint(root)
+            self.assertIs(result[0], loaded_model)
+            self.assertIs(result[1], loaded_tokenizer)
+            self.assertEqual(result[2]["epoch"], 1)
+            loaded_model.to.assert_called_once_with(device="cuda:0", dtype="float32")
+            loaded_model.eval.assert_called_once_with()
+            modules["transformers"].AutoModelForSeq2SeqLM.from_pretrained.assert_called_once_with(root / "best", local_files_only=True)
 
 
 if __name__ == "__main__":

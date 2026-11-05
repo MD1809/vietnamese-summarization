@@ -1168,3 +1168,127 @@ def train_checkpoint_test_epoch(model, train_loader, optimizer, progress, config
         "progress": dict(updated_progress),
         "finite_gradients_and_updates_check_passed": True,
     }
+
+
+def update_best_checkpoint(
+    model, tokenizer, checkpoint_run_dir, progress, validation_report,
+    config_path="configs/train.json",
+):
+    import json
+    import math
+    import shutil
+    from pathlib import Path
+
+    config = load_train_config(config_path)
+    if config["checkpoint_selection"] != {"metric": "validation_loss", "mode": "min"}:
+        raise ValueError("Best checkpoint selection expects minimum validation_loss")
+    loss = validation_report["validation_loss"]
+    if type(loss) not in [int, float] or not math.isfinite(loss) or loss < 0:
+        raise ValueError("Best checkpoint requires a finite nonnegative validation loss")
+    for key in ["complete_validation_in_order_check_passed", "weights_unchanged_check_passed"]:
+        if validation_report.get(key) is not True:
+            raise ValueError("Best selection requires a checked validation report")
+    validation_ids = list(validation_report["sample_ids"])
+    if len(validation_ids) == 0 or len(set(validation_ids)) != len(validation_ids):
+        raise ValueError("Best selection requires distinct validation sample IDs")
+    if validation_report["sample_count"] != len(validation_ids) or validation_report["valid_target_token_count"] <= 0:
+        raise ValueError("Validation sample or token counts are invalid")
+    for key in ["completed_epochs", "global_step"]:
+        if type(progress.get(key)) is not int or progress[key] < 1:
+            raise ValueError("Best selection must follow a completed training epoch")
+    root = Path(checkpoint_run_dir).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    best = root / "best"
+    pending = root / "best_pending"
+    previous = root / "best_previous"
+    for path in [best, pending, previous]:
+        if path.is_symlink() or path.resolve().parent != root:
+            raise ValueError("Best checkpoint path must stay inside the run directory")
+    selected = None
+    if best.exists():
+        selected = json.loads((best / "selection.json").read_text(encoding="utf-8"))
+        if (
+            selected["train_config"] != config
+            or selected["validation_sample_ids"] != validation_ids
+            or selected["valid_target_token_count"] != validation_report["valid_target_token_count"]
+        ):
+            raise ValueError("Best selection must use the same configuration and validation split")
+        if not math.isfinite(selected["validation_loss"]):
+            raise ValueError("Saved best validation loss is invalid")
+    elif "best_validation_loss" in progress:
+        raise ValueError("Progress refers to a best checkpoint that is missing")
+    updated = selected is None or loss < selected["validation_loss"]
+    if updated:
+        if pending.exists() or previous.exists():
+            raise RuntimeError("Best staging remains from an interrupted save; inspect before retrying")
+        selected = {
+            "metric": "validation_loss",
+            "mode": "min",
+            "validation_loss": loss,
+            "epoch": progress["completed_epochs"],
+            "global_step": progress["global_step"],
+            "validation_sample_ids": validation_ids,
+            "valid_target_token_count": validation_report["valid_target_token_count"],
+            "train_config": config,
+        }
+        pending.mkdir()
+        model.save_pretrained(pending, safe_serialization=True)
+        tokenizer.save_pretrained(pending)
+        metadata_path = pending / "selection.json"
+        metadata_path.write_text(json.dumps(selected, ensure_ascii=False, indent=2), encoding="utf-8")
+        for name in ["config.json", "model.safetensors", "tokenizer_config.json", "spiece.model", "selection.json"]:
+            path = pending / name
+            if not path.is_file() or path.stat().st_size == 0:
+                raise ValueError("Incomplete pending best checkpoint: " + name)
+        if json.loads(metadata_path.read_text(encoding="utf-8")) != selected:
+            raise ValueError("Best selection metadata readback failed")
+        if best.exists():
+            best.rename(previous)
+        try:
+            pending.rename(best)
+        except OSError:
+            if previous.exists() and not best.exists():
+                previous.rename(best)
+            raise
+        if previous.exists():
+            if previous.is_symlink() or previous.resolve() != root / "best_previous":
+                raise ValueError("Cannot remove best backup outside the run directory")
+            shutil.rmtree(previous)
+    updated_progress = dict(progress)
+    updated_progress["best_validation_loss"] = selected["validation_loss"]
+    updated_progress["best_epoch"] = selected["epoch"]
+    updated_progress["best_global_step"] = selected["global_step"]
+    return updated_progress, {
+        "updated": updated,
+        "candidate_validation_loss": loss,
+        "best_validation_loss": selected["validation_loss"],
+        "best_epoch": selected["epoch"],
+        "best_global_step": selected["global_step"],
+        "validation_sample_count": len(validation_ids),
+        "checkpoint_dir": str(best),
+        "strict_lower_loss_rule_check_passed": True,
+    }
+
+
+def load_best_checkpoint(checkpoint_run_dir, config_path="configs/train.json"):
+    import json
+    import math
+    from pathlib import Path
+    import torch
+    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+    root = Path(checkpoint_run_dir).resolve()
+    best = root / "best"
+    if best.is_symlink() or best.resolve().parent != root:
+        raise ValueError("Best checkpoint must stay inside the run directory")
+    selection = json.loads((best / "selection.json").read_text(encoding="utf-8"))
+    config = load_train_config(config_path)
+    if selection["train_config"] != config or not math.isfinite(selection["validation_loss"]):
+        raise ValueError("Best checkpoint metadata does not match current configuration")
+    if config["precision"] != "fp32" or not torch.cuda.is_available():
+        raise RuntimeError("Best checkpoint check requires CUDA and fp32")
+    tokenizer = AutoTokenizer.from_pretrained(best, use_fast=False, local_files_only=True)
+    model = AutoModelForSeq2SeqLM.from_pretrained(best, local_files_only=True)
+    model = model.to(device="cuda:0", dtype=torch.float32)
+    model.eval()
+    return model, tokenizer, selection
