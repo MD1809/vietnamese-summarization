@@ -1,7 +1,9 @@
 import json
+import copy
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from src.data import (
     clean_wikilingua_pairs,
@@ -9,6 +11,9 @@ from src.data import (
     make_sample_id,
     save_cleaning_manifest,
     save_split_manifest,
+    save_subset_manifest,
+    select_fixed_subsets,
+    restore_fixed_subsets,
     split_wikilingua_pairs,
     validate_dataset_splits,
 )
@@ -355,6 +360,123 @@ class SplitPairsTests(unittest.TestCase):
         for split_name in splits:
             total = total + manifest["splits"][split_name]["pair_count"]
         self.assertEqual(total, 20)
+
+
+class FixedSubsetTests(unittest.TestCase):
+    def make_parent(self, linked=False):
+        pairs = []
+        for group in range(30):
+            for section in range(3):
+                url = f"url-{group:02d}"
+                sample_id = f"sample-{group:02d}-{section}"
+                pairs.append({
+                    "id": sample_id,
+                    "url": url,
+                    "group_id": url,
+                    "document": "document-" + sample_id,
+                    "summary": "summary-" + sample_id,
+                })
+        report = {"retained_pair_count": len(pairs), "shared_source_groups": []}
+        if linked:
+            report["shared_source_groups"] = [
+                {"group_ids": ["url-00", "removed-bridge"]},
+                {"group_ids": ["removed-bridge", "url-01"]},
+            ]
+        return split_wikilingua_pairs(pairs, report)
+
+    def targets(self):
+        return {"train": 7, "validation": 4, "test": 4}
+
+    def test_whole_groups_overshoot_and_parent_membership(self):
+        splits, parent = self.make_parent()
+        subsets, manifest = select_fixed_subsets(splits, parent, self.targets())
+        for name in subsets:
+            expected = 6
+            if name == "train":
+                expected = 9
+            self.assertEqual(len(subsets[name]), expected)
+            parent_ids = set(parent["splits"][name]["sample_ids"])
+            for pair in subsets[name]:
+                self.assertIn(pair["id"], parent_ids)
+        self.assertTrue(all(manifest["checks"].values()))
+
+    def test_repeatable_when_parent_input_order_changes(self):
+        splits, parent = self.make_parent()
+        subsets, manifest = select_fixed_subsets(splits, parent, self.targets())
+        reversed_splits = {}
+        for name in splits:
+            reversed_splits[name] = list(reversed(splits[name]))
+        repeated, repeated_manifest = select_fixed_subsets(reversed_splits, parent, self.targets())
+        self.assertEqual(repeated, subsets)
+        self.assertEqual(repeated_manifest, manifest)
+
+    def test_restore_uses_saved_ids_without_random_selection(self):
+        splits, parent = self.make_parent()
+        subsets, manifest = select_fixed_subsets(splits, parent, self.targets())
+        with patch("src.data.random.Random", side_effect=RuntimeError("Unexpected resampling")):
+            restored = restore_fixed_subsets(splits, parent, manifest)
+        self.assertEqual(restored, subsets)
+
+    def test_linked_groups_remain_whole_including_removed_bridge(self):
+        splits, parent = self.make_parent(linked=True)
+        subsets, manifest = select_fixed_subsets(splits, parent, self.targets())
+        for name in manifest["splits"]:
+            urls = manifest["splits"][name]["group_ids"]
+            self.assertEqual("url-00" in urls, "url-01" in urls)
+
+    def test_rejects_partial_group_and_foreign_sample(self):
+        splits, parent = self.make_parent()
+        subsets, manifest = select_fixed_subsets(splits, parent, self.targets())
+        partial = copy.deepcopy(manifest)
+        partial["splits"]["train"]["sample_ids"].pop()
+        with self.assertRaisesRegex(ValueError, "whole parent groups"):
+            restore_fixed_subsets(splits, parent, partial)
+        foreign = copy.deepcopy(manifest)
+        foreign["splits"]["train"]["sample_ids"][0] = parent["splits"]["test"]["sample_ids"][0]
+        with self.assertRaisesRegex(ValueError, "whole parent groups"):
+            restore_fixed_subsets(splits, parent, foreign)
+
+    def test_rejects_wrong_parent_and_ignores_save_timestamp(self):
+        splits, parent = self.make_parent()
+        subsets, manifest = select_fixed_subsets(splits, parent, self.targets())
+        saved_parent = parent.copy()
+        saved_parent["created_at_utc"] = "another save time"
+        self.assertEqual(restore_fixed_subsets(splits, saved_parent, manifest), subsets)
+        wrong_parent = copy.deepcopy(parent)
+        wrong_parent["seed"] = 99
+        with self.assertRaisesRegex(ValueError, "different parent"):
+            restore_fixed_subsets(splits, wrong_parent, manifest)
+
+    def test_invalid_targets_and_parent_input_are_rejected(self):
+        splits, parent = self.make_parent()
+        for value in [0, -1, True, 1000]:
+            targets = self.targets()
+            targets["train"] = value
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    select_fixed_subsets(splits, parent, targets)
+        broken = copy.deepcopy(splits)
+        broken["train"][0]["id"] = "unknown-id"
+        with self.assertRaisesRegex(ValueError, "parent split manifest"):
+            select_fixed_subsets(broken, parent, self.targets())
+
+    def test_does_not_modify_parent_or_share_pair_dictionaries(self):
+        splits, parent = self.make_parent()
+        original = copy.deepcopy(splits)
+        subsets, manifest = select_fixed_subsets(splits, parent, self.targets())
+        subsets["train"][0]["summary"] = "changed output"
+        self.assertEqual(splits, original)
+
+    def test_manifest_round_trip_restores_identical_subset(self):
+        splits, parent = self.make_parent()
+        subsets, manifest = select_fixed_subsets(splits, parent, self.targets())
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifests" / "subsets.json"
+            saved = save_subset_manifest(manifest, path)
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved, loaded)
+            self.assertEqual(restore_fixed_subsets(splits, parent, loaded), subsets)
+            self.assertNotIn("created_at_utc", manifest)
 
 
 if __name__ == "__main__":

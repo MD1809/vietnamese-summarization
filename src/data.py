@@ -428,3 +428,194 @@ def save_split_manifest(manifest, manifest_path):
         encoding="utf-8",
     )
     return output
+
+
+def _split_manifest_fingerprint(split_manifest):
+    metadata = split_manifest.copy()
+    metadata.pop("created_at_utc", None)
+    text = json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _index_parent_splits(dataset_splits, split_manifest):
+    split_names = ["train", "validation", "test"]
+    if set(dataset_splits) != set(split_names):
+        raise ValueError("Expected train, validation and test splits")
+
+    url_groups = {}
+    linked_groups = []
+    for group_id in split_manifest["split_groups"]:
+        urls = split_manifest["split_groups"][group_id]
+        linked_groups.append({"group_ids": urls})
+        for url in urls:
+            if url in url_groups:
+                raise ValueError("URL appears in multiple parent split groups")
+            url_groups[url] = group_id
+
+    pairs_by_id = {}
+    pairs_by_group = {}
+    original_pairs = []
+    for split_name in split_names:
+        pairs_by_id[split_name] = {}
+        pairs_by_group[split_name] = {}
+        for pair in dataset_splits[split_name]:
+            sample_id = pair["id"]
+            if sample_id in pairs_by_id[split_name]:
+                raise ValueError("Duplicate sample ID in parent split")
+            pairs_by_id[split_name][sample_id] = pair
+            original_pairs.append(pair)
+            url = pair["group_id"]
+            if url not in url_groups:
+                raise ValueError("Sample URL missing from parent split groups")
+            group_id = url_groups[url]
+            if group_id not in pairs_by_group[split_name]:
+                pairs_by_group[split_name][group_id] = []
+            pairs_by_group[split_name][group_id].append(pair)
+
+        metadata = split_manifest["splits"][split_name]
+        if set(pairs_by_id[split_name]) != set(metadata["sample_ids"]):
+            raise ValueError("Input sample IDs do not match parent split manifest")
+        if len(dataset_splits[split_name]) != metadata["pair_count"]:
+            raise ValueError("Input count does not match parent split manifest")
+        if set(pairs_by_group[split_name]) != set(metadata["split_group_ids"]):
+            raise ValueError("Input groups do not match parent split manifest")
+
+    validate_dataset_splits(dataset_splits, original_pairs, linked_groups)
+    return pairs_by_id, pairs_by_group
+
+
+def select_fixed_subsets(
+    dataset_splits,
+    split_manifest,
+    target_counts,
+    config_path="configs/train.json",
+):
+    config = load_train_config(config_path)
+    if split_manifest["dataset"] != config["dataset"]:
+        raise ValueError("Parent dataset does not match training configuration")
+    if split_manifest["seed"] != config["seed"]:
+        raise ValueError("Parent seed does not match training configuration")
+    if set(target_counts) != {"train", "validation", "test"}:
+        raise ValueError("Expected target counts for train, validation and test")
+
+    pairs_by_id, pairs_by_group = _index_parent_splits(dataset_splits, split_manifest)
+    subsets = {}
+    subset_metadata = {}
+    for split_name in ["train", "validation", "test"]:
+        target = target_counts[split_name]
+        if type(target) is not int or target <= 0:
+            raise ValueError("Subset target must be a positive integer")
+        if target > len(pairs_by_id[split_name]):
+            raise ValueError(f"Subset target exceeds available pairs in {split_name}")
+
+        group_ids = sorted(pairs_by_group[split_name])
+        generator = random.Random(config["seed"])
+        generator.shuffle(group_ids)
+        selected_group_ids = []
+        selected_ids = []
+        for group_id in group_ids:
+            selected_group_ids.append(group_id)
+            for pair in pairs_by_group[split_name][group_id]:
+                selected_ids.append(pair["id"])
+            if len(selected_ids) >= target:
+                break
+
+        selected_ids.sort()
+        subsets[split_name] = []
+        selected_urls = set()
+        for sample_id in selected_ids:
+            pair = pairs_by_id[split_name][sample_id]
+            subsets[split_name].append(pair.copy())
+            selected_urls.add(pair["group_id"])
+        subset_metadata[split_name] = {
+            "target_pair_count": target,
+            "pair_count": len(selected_ids),
+            "parent_pair_count": len(dataset_splits[split_name]),
+            "article_group_count": len(selected_urls),
+            "split_group_count": len(selected_group_ids),
+            "sample_ids": selected_ids,
+            "group_ids": sorted(selected_urls),
+            "split_group_ids": sorted(selected_group_ids),
+        }
+
+    manifest = {
+        "dataset": config["dataset"].copy(),
+        "seed": config["seed"],
+        "parent_split_manifest": "wikilingua_splits.json",
+        "parent_split_sha256": _split_manifest_fingerprint(split_manifest),
+        "rules": {
+            "selection": "within each parent split, sort component IDs, shuffle with a fresh random.Random(seed), take whole components until reaching or exceeding target",
+            "ordering": "sort selected sample IDs within each subset",
+            "reuse": "restore saved sample IDs; do not resample for each training run",
+        },
+        "splits": subset_metadata,
+    }
+    restore_fixed_subsets(dataset_splits, split_manifest, manifest)
+    manifest["checks"] = {
+        "parent_membership_check_passed": True,
+        "whole_group_check_passed": True,
+        "unique_id_check_passed": True,
+        "group_overlap_check_passed": True,
+        "document_overlap_check_passed": True,
+        "linked_group_check_passed": True,
+    }
+    return subsets, manifest
+
+
+def restore_fixed_subsets(dataset_splits, split_manifest, subset_manifest):
+    if subset_manifest["parent_split_sha256"] != _split_manifest_fingerprint(split_manifest):
+        raise ValueError("Subset manifest refers to a different parent split manifest")
+    if subset_manifest["dataset"] != split_manifest["dataset"]:
+        raise ValueError("Subset and parent datasets do not match")
+    if subset_manifest["seed"] != split_manifest["seed"]:
+        raise ValueError("Subset and parent seeds do not match")
+    if set(subset_manifest["splits"]) != {"train", "validation", "test"}:
+        raise ValueError("Expected three saved subsets")
+
+    pairs_by_id, pairs_by_group = _index_parent_splits(dataset_splits, split_manifest)
+    restored = {}
+    selected_pairs = []
+    for split_name in ["train", "validation", "test"]:
+        metadata = subset_manifest["splits"][split_name]
+        sample_ids = metadata["sample_ids"]
+        if len(set(sample_ids)) != len(sample_ids):
+            raise ValueError("Duplicate saved subset sample ID")
+        expected_ids = set()
+        for group_id in metadata["split_group_ids"]:
+            if group_id not in pairs_by_group[split_name]:
+                raise ValueError("Saved group does not belong to original split")
+            for pair in pairs_by_group[split_name][group_id]:
+                expected_ids.add(pair["id"])
+        if set(sample_ids) != expected_ids:
+            raise ValueError("Saved subset is not a collection of whole parent groups")
+        if len(sample_ids) != metadata["pair_count"]:
+            raise ValueError("Saved subset count does not match sample IDs")
+
+        restored[split_name] = []
+        urls = set()
+        for sample_id in sorted(sample_ids):
+            pair = pairs_by_id[split_name][sample_id].copy()
+            restored[split_name].append(pair)
+            selected_pairs.append(pair)
+            urls.add(pair["group_id"])
+        if set(metadata["group_ids"]) != urls:
+            raise ValueError("Saved article groups do not match selected samples")
+        if metadata["article_group_count"] != len(urls):
+            raise ValueError("Saved article group count does not match samples")
+        if metadata["split_group_count"] != len(metadata["split_group_ids"]):
+            raise ValueError("Saved split group count does not match groups")
+        if metadata["parent_pair_count"] != len(dataset_splits[split_name]):
+            raise ValueError("Saved parent count does not match original split")
+        target = metadata["target_pair_count"]
+        if type(target) is not int or target <= 0 or len(sample_ids) < target:
+            raise ValueError("Saved subset does not meet a valid target")
+
+    links = []
+    for urls in split_manifest["split_groups"].values():
+        links.append({"group_ids": urls})
+    validate_dataset_splits(restored, selected_pairs, links)
+    return restored
+
+
+def save_subset_manifest(manifest, manifest_path):
+    return save_split_manifest(manifest, manifest_path)
