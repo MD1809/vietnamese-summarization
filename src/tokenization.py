@@ -357,3 +357,119 @@ def decode_padded_labels(labels, tokenizer):
                 token_ids.append(token_id)
         decoded.append(tokenizer.decode(token_ids, skip_special_tokens=True))
     return decoded
+
+
+class Seq2SeqBatchCollator:
+    def __init__(self, tokenizer):
+        self.collator = create_seq2seq_collator(tokenizer)
+
+    def __call__(self, samples):
+        sample_ids = []
+        group_ids = []
+        for sample in samples:
+            sample_ids.append(sample["id"])
+            group_ids.append(sample["group_id"])
+        return {
+            "sample_ids": sample_ids,
+            "group_ids": group_ids,
+            "model_inputs": collate_tokenized_samples(samples, self.collator),
+        }
+
+
+def create_data_loader(dataset, tokenizer, batch_size, shuffle, seed):
+    import torch
+    from torch.utils.data import DataLoader
+
+    if type(batch_size) is not int or batch_size <= 0:
+        raise ValueError("DataLoader batch_size must be a positive integer")
+    if type(shuffle) is not bool:
+        raise ValueError("DataLoader shuffle must be a boolean")
+    if type(seed) is not int or seed < 0 or seed >= 2**32:
+        raise ValueError("DataLoader seed must be an integer between 0 and 2**32 - 1")
+    if len(dataset) == 0:
+        raise ValueError("Cannot create a DataLoader from an empty dataset")
+
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        collate_fn=Seq2SeqBatchCollator(tokenizer),
+        generator=generator,
+        num_workers=0,
+        drop_last=False,
+    )
+
+
+def create_train_validation_loaders(tokenized_splits, tokenizer, config_path="configs/train.json"):
+    if set(tokenized_splits) != {"train", "validation"}:
+        raise ValueError("Expected tokenized train and validation only; test remains locked")
+    config = load_train_config(config_path)
+    loaders = {}
+    for split_name in ["train", "validation"]:
+        shuffle = False
+        if split_name == "train":
+            shuffle = True
+        loaders[split_name] = create_data_loader(
+            tokenized_splits[split_name],
+            tokenizer,
+            config["batch_size"],
+            shuffle,
+            config["seed"],
+        )
+    return loaders
+
+
+def validate_loader_epoch(loader, dataset, tokenizer, keep_order=False):
+    samples_by_id = {}
+    expected_ids = []
+    for sample in dataset:
+        sample_id = sample["id"]
+        if sample_id in samples_by_id:
+            raise ValueError("Duplicate sample ID in DataLoader input")
+        samples_by_id[sample_id] = sample
+        expected_ids.append(sample_id)
+
+    seen_ids = []
+    seen_set = set()
+    batch_count = 0
+    for batch in loader:
+        batch_count = batch_count + 1
+        if set(batch["model_inputs"]) != {"input_ids", "attention_mask", "labels"}:
+            raise ValueError("Unexpected metadata or fields in model_inputs")
+        if len(batch["sample_ids"]) != len(batch["group_ids"]):
+            raise ValueError("Batch sample IDs and group IDs have different lengths")
+        original_samples = []
+        for index in range(len(batch["sample_ids"])):
+            sample_id = batch["sample_ids"][index]
+            if sample_id not in samples_by_id or sample_id in seen_set:
+                raise ValueError("DataLoader returned an unknown or repeated sample ID")
+            sample = samples_by_id[sample_id]
+            if batch["group_ids"][index] != sample["group_id"]:
+                raise ValueError("DataLoader changed sample group identity")
+            if sample["input_ids"][-1] != tokenizer.eos_token_id:
+                raise ValueError("Source EOS is missing before collation")
+            if sample["labels"][-1] != tokenizer.eos_token_id:
+                raise ValueError("Target EOS is missing before collation")
+            original_samples.append(sample)
+            seen_ids.append(sample_id)
+            seen_set.add(sample_id)
+        validate_padded_batch(batch["model_inputs"], original_samples, tokenizer)
+
+    if seen_set != set(expected_ids):
+        raise ValueError("DataLoader omitted input samples")
+    if keep_order and seen_ids != expected_ids:
+        raise ValueError("DataLoader changed validation sample order")
+    return {
+        "sample_count": len(seen_ids),
+        "batch_count": batch_count,
+        "sample_ids": seen_ids,
+        "checks": {
+            "complete_unique_samples_check_passed": True,
+            "metadata_separation_check_passed": True,
+            "padding_and_mask_check_passed": True,
+            "eos_and_label_positions_check_passed": True,
+            "requested_order_check_passed": True,
+        },
+    }

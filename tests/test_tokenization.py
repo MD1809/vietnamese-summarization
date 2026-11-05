@@ -1,6 +1,7 @@
 import hashlib
 import copy
 import json
+import random
 import sys
 import tempfile
 import types
@@ -20,6 +21,9 @@ from src.tokenization import (
     collate_tokenized_samples,
     validate_padded_batch,
     decode_padded_labels,
+    create_data_loader,
+    create_train_validation_loaders,
+    validate_loader_epoch,
 )
 
 
@@ -456,6 +460,173 @@ class PaddingTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 create_seq2seq_collator(types.SimpleNamespace(pad_token_id=0, padding_side="left"))
         constructor.assert_not_called()
+
+
+class TestGenerator:
+    def __init__(self):
+        self.random = random.Random()
+        self.seed = None
+
+    def manual_seed(self, seed):
+        self.seed = seed
+        self.random.seed(seed)
+
+
+class TestDataLoader:
+    def __init__(self, dataset, **options):
+        self.dataset = dataset
+        self.options = options
+        self.generator = options["generator"]
+
+    def __iter__(self):
+        indices = list(range(len(self.dataset)))
+        if self.options["shuffle"]:
+            self.generator.random.shuffle(indices)
+        size = self.options["batch_size"]
+        for start in range(0, len(indices), size):
+            samples = []
+            for index in indices[start:start + size]:
+                samples.append(self.dataset[index])
+            if len(samples) < size and self.options["drop_last"]:
+                continue
+            yield self.options["collate_fn"](samples)
+
+
+class DataLoaderTests(unittest.TestCase):
+    def examples(self):
+        samples = []
+        for index in range(11):
+            samples.append({
+                "id": f"sample-{index}",
+                "group_id": f"group-{index}",
+                "input_ids": [index + 10, 1],
+                "attention_mask": [1, 1],
+                "labels": [index + 80, 1],
+            })
+        tokenizer = types.SimpleNamespace(pad_token_id=0, eos_token_id=1, padding_side="right")
+        return samples, tokenizer
+
+    def modules(self):
+        def collate(features):
+            output = {}
+            for field in ["input_ids", "attention_mask", "labels"]:
+                rows = []
+                for feature in features:
+                    rows.append(list(feature[field]))
+                output[field] = ListTensor(rows)
+            return output
+
+        data_module = types.SimpleNamespace(DataLoader=TestDataLoader)
+        utils_module = types.SimpleNamespace(data=data_module)
+        torch_module = types.SimpleNamespace(Generator=TestGenerator, utils=utils_module)
+        transformers_module = types.SimpleNamespace(DataCollatorForSeq2Seq=Mock(return_value=collate))
+        return {
+            "torch": torch_module,
+            "torch.utils": utils_module,
+            "torch.utils.data": data_module,
+            "transformers": transformers_module,
+        }
+
+    def test_settings_use_config_and_independent_generators(self):
+        samples, tokenizer = self.examples()
+        with patch.dict(sys.modules, self.modules()):
+            loaders = create_train_validation_loaders({"train": samples, "validation": samples[:4]}, tokenizer)
+        self.assertIs(loaders["train"].options["shuffle"], True)
+        self.assertIs(loaders["validation"].options["shuffle"], False)
+        self.assertIsNot(loaders["train"].generator, loaders["validation"].generator)
+        for loader in loaders.values():
+            self.assertEqual(loader.options["batch_size"], 1)
+            self.assertEqual(loader.generator.seed, 42)
+            self.assertEqual(loader.options["num_workers"], 0)
+            self.assertIs(loader.options["drop_last"], False)
+
+    def test_two_fresh_train_loaders_reproduce_first_epoch(self):
+        samples, tokenizer = self.examples()
+        with patch.dict(sys.modules, self.modules()):
+            first = create_data_loader(samples, tokenizer, 3, True, 42)
+            second = create_data_loader(samples, tokenizer, 3, True, 42)
+            first_report = validate_loader_epoch(first, samples, tokenizer)
+            second_report = validate_loader_epoch(second, samples, tokenizer)
+        self.assertEqual(first_report["sample_ids"], second_report["sample_ids"])
+        self.assertEqual(first_report["sample_count"], 11)
+        self.assertEqual(first_report["batch_count"], 4)
+
+    def test_next_epoch_advances_shuffle_and_keeps_all_samples(self):
+        samples, tokenizer = self.examples()
+        with patch.dict(sys.modules, self.modules()):
+            loader = create_data_loader(samples, tokenizer, 3, True, 42)
+            first = validate_loader_epoch(loader, samples, tokenizer)
+            second = validate_loader_epoch(loader, samples, tokenizer)
+        self.assertNotEqual(first["sample_ids"], second["sample_ids"])
+        self.assertEqual(set(first["sample_ids"]), set(second["sample_ids"]))
+
+    def test_validation_order_and_partial_final_batch(self):
+        samples, tokenizer = self.examples()
+        with patch.dict(sys.modules, self.modules()):
+            loader = create_data_loader(samples, tokenizer, 3, False, 42)
+            report = validate_loader_epoch(loader, samples, tokenizer, keep_order=True)
+            batches = list(loader)
+        expected_ids = []
+        for sample in samples:
+            expected_ids.append(sample["id"])
+        self.assertEqual(report["sample_ids"], expected_ids)
+        self.assertEqual(len(batches[-1]["sample_ids"]), 2)
+        self.assertEqual(set(batches[0]), {"sample_ids", "group_ids", "model_inputs"})
+        self.assertEqual(set(batches[0]["model_inputs"]), {"input_ids", "attention_mask", "labels"})
+
+    def test_validation_does_not_change_train_generator(self):
+        samples, tokenizer = self.examples()
+        splits = {"train": samples, "validation": samples[:4]}
+        with patch.dict(sys.modules, self.modules()):
+            loaders = create_train_validation_loaders(splits, tokenizer)
+            repeated = create_train_validation_loaders(splits, tokenizer)
+            validate_loader_epoch(loaders["train"], samples, tokenizer)
+            validate_loader_epoch(repeated["train"], samples, tokenizer)
+            validate_loader_epoch(loaders["validation"], samples[:4], tokenizer, keep_order=True)
+            actual = validate_loader_epoch(loaders["train"], samples, tokenizer)
+            expected = validate_loader_epoch(repeated["train"], samples, tokenizer)
+        self.assertEqual(actual["sample_ids"], expected["sample_ids"])
+
+    def test_detects_missing_repeated_samples_and_wrong_order(self):
+        samples, tokenizer = self.examples()
+        with patch.dict(sys.modules, self.modules()):
+            loader = create_data_loader(samples, tokenizer, 3, False, 42)
+            batches = list(loader)
+        with self.assertRaisesRegex(ValueError, "omitted"):
+            validate_loader_epoch(batches[:-1], samples, tokenizer)
+        with self.assertRaisesRegex(ValueError, "repeated"):
+            validate_loader_epoch(batches + [batches[0]], samples, tokenizer)
+        with self.assertRaisesRegex(ValueError, "sample order"):
+            validate_loader_epoch(list(reversed(batches)), samples, tokenizer, keep_order=True)
+
+    def test_detects_missing_eos_and_wrong_group_identity(self):
+        samples, tokenizer = self.examples()
+        with patch.dict(sys.modules, self.modules()):
+            loader = create_data_loader(samples, tokenizer, 3, False, 42)
+            batches = list(loader)
+        for field in ["input_ids", "labels"]:
+            broken = copy.deepcopy(samples)
+            broken[0][field][-1] = 999
+            with self.assertRaisesRegex(ValueError, "EOS"):
+                validate_loader_epoch(batches, broken, tokenizer)
+        batches[0]["group_ids"][0] = "wrong-group"
+        with self.assertRaisesRegex(ValueError, "group identity"):
+            validate_loader_epoch(batches, samples, tokenizer)
+
+    def test_rejects_invalid_parameters_and_test_split(self):
+        samples, tokenizer = self.examples()
+        with patch.dict(sys.modules, self.modules()):
+            for batch_size in [0, -1, True]:
+                with self.assertRaises(ValueError):
+                    create_data_loader(samples, tokenizer, batch_size, True, 42)
+            with self.assertRaises(ValueError):
+                create_data_loader([], tokenizer, 1, False, 42)
+            with self.assertRaises(ValueError):
+                create_data_loader(samples, tokenizer, 1, "yes", 42)
+            with self.assertRaises(ValueError):
+                create_data_loader(samples, tokenizer, 1, False, -1)
+        with self.assertRaisesRegex(ValueError, "test remains locked"):
+            create_train_validation_loaders({"train": samples, "validation": samples, "test": samples}, tokenizer)
 
 
 if __name__ == "__main__":
