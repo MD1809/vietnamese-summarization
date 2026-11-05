@@ -1,0 +1,72 @@
+{
+  "dataset": {
+    "id": "esdurmus/wiki_lingua",
+    "revision": "ea3db3510cbd34d0f8dc612419ae40e4732f3b40",
+    "language": "vietnamese"
+  },
+  "seed": 42,
+  "subset_manifest_sha256": "0b4018e264f7a86e45010a230c4ebbe5969b8743772022af4d17ae3e37efad57",
+  "source_files": {
+    "train": {
+      "path": "data/processed/train.jsonl",
+      "pair_count": 2000,
+      "byte_count": 7545660,
+      "sha256": "dd3a50a9a6a4f9d087904a604c41b9db3fc82023266b9b90554934b6220fe483"
+    },
+    "validation": {
+      "path": "data/processed/validation.jsonl",
+      "pair_count": 201,
+      "byte_count": 761416,
+      "sha256": "c0033e989ae1cae5a06898c0d45884498b32ef3fd0aade42ce763332ccafc1fe"
+    }
+  },
+  "tokenization": {
+    "model_id": "VietAI/vit5-base",
+    "revision": "2209a38d735ede63e88f5aa52bcdc11a05a37b85",
+    "tokenizer_class": "T5Tokenizer",
+    "task_prefix": "",
+    "add_special_tokens": true,
+    "padding": false,
+    "truncation_when_measuring": false,
+    "use_fast": false,
+    "summary_input": "text_target"
+  },
+  "splits": {
+    "train": {
+      "document": {
+        "limit": 1024,
+        "sample_count": 2000,
+        "truncated_count": 221,
+        "truncated_percentage": 11.05
+      },
+      "summary": {
+        "limit": 128,
+        "sample_count": 2000,
+        "truncated_count": 98,
+        "truncated_percentage": 4.9
+      }
+    },
+    "validation": {
+      "document": {
+        "limit": 1024,
+        "sample_count": 201,
+        "truncated_count": 24,
+        "truncated_percentage": 11.940298507462686
+      },
+      "summary": {
+        "limit": 128,
+        "sample_count": 201,
+        "truncated_count": 10,
+        "truncated_percentage": 4.975124378109453
+      }
+    }
+  },
+  "decision_status": "pending_review",
+  "checks": {
+    "file_hash_check_passed": true,
+    "fixed_sample_ids_check_passed": true,
+    "test_remains_locked": true,
+    "test_content_read": false
+  },
+  "created_at_utc": "2026-11-05T01:54:35.998607+00:00"
+}

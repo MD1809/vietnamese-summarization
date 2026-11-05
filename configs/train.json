@@ -17,8 +17,15 @@
     "checkpoint_dir": "checkpoints"
   },
   "seed": 42,
-  "max_source_length": 512,
+  "task_prefix": "",
+  "max_source_length": 1024,
   "max_target_length": 128,
+  "token_limits_decision": {
+    "status": "approved",
+    "selected_report": "data/manifests/wikilingua_truncation_1024_128.json",
+    "reason": "Selected source limit 1024 with document truncation of 11.05% on train and 11.94% on validation; target limit is 128.",
+    "training_memory_verified": false
+  },
   "batch_size": 1,
   "gradient_accumulation_steps": 8,
   "learning_rate": 0.00005,
