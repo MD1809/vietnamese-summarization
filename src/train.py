@@ -1292,3 +1292,209 @@ def load_best_checkpoint(checkpoint_run_dir, config_path="configs/train.json"):
     model = model.to(device="cuda:0", dtype=torch.float32)
     model.eval()
     return model, tokenizer, selection
+
+
+def train_epoch(model, train_loader, optimizer, global_step=0, config_path="configs/train.json"):
+    import time
+    import torch
+
+    config = load_train_config(config_path)
+    expected_ids = capture_train_loader_state(train_loader)["sample_ids"]
+    seen_ids = []
+    total_loss = 0.0
+    total_tokens = 0
+    update_count = 0
+    device = next(model.parameters()).device
+    torch.cuda.synchronize(device)
+    started_at = time.perf_counter()
+    iterator = iter(train_loader)
+    while True:
+        group = []
+        for index in range(config["gradient_accumulation_steps"]):
+            try:
+                batch = next(iterator)
+            except StopIteration:
+                break
+            group.append(batch)
+        if len(group) == 0:
+            break
+        report = train_accumulated_group(model, group, optimizer, config_path)
+        seen_ids.extend(report["sample_ids"])
+        token_count = report["total_valid_target_tokens"]
+        total_loss = total_loss + report["token_weighted_group_loss"] * token_count
+        total_tokens = total_tokens + token_count
+        global_step = global_step + 1
+        update_count = update_count + 1
+        if update_count % 25 == 0:
+            print("Global step:", global_step, "Mẫu đã học:", len(seen_ids), "Train loss:", total_loss / total_tokens, flush=True)
+    torch.cuda.synchronize(device)
+    elapsed = time.perf_counter() - started_at
+    if len(seen_ids) != len(expected_ids) or set(seen_ids) != set(expected_ids):
+        raise ValueError("Training epoch omitted or repeated samples")
+    if total_tokens == 0:
+        raise ValueError("Training epoch requires valid target tokens")
+    expected_updates = (len(train_loader) + config["gradient_accumulation_steps"] - 1) // config["gradient_accumulation_steps"]
+    if update_count != expected_updates:
+        raise ValueError("Training epoch optimizer update count is incorrect")
+    optimizer_steps = set()
+    for state in optimizer.state.values():
+        optimizer_steps.add(int(state["step"].item()))
+    if optimizer_steps != {global_step}:
+        raise ValueError("Optimizer state does not match global_step")
+    return {
+        "train_loss": total_loss / total_tokens,
+        "train_sample_count": len(seen_ids),
+        "train_valid_target_tokens": total_tokens,
+        "optimizer_updates": update_count,
+        "global_step": global_step,
+        "train_seconds": elapsed,
+        "complete_train_samples_check_passed": True,
+    }
+
+
+def write_training_history(output_dir, history):
+    import csv
+    from pathlib import Path
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    target = output_dir / "training_history.csv"
+    pending = output_dir / "training_history.csv.tmp"
+    fields = [
+        "epoch", "global_step", "train_loss", "validation_loss",
+        "train_sample_count", "validation_sample_count",
+        "train_valid_target_tokens", "validation_valid_target_tokens",
+        "learning_rate", "train_seconds", "validation_seconds", "epoch_compute_seconds",
+    ]
+    with pending.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(history)
+    with pending.open(encoding="utf-8", newline="") as file:
+        restored = list(csv.DictReader(file))
+    expected = []
+    for row in history:
+        strings = {}
+        for field in fields:
+            strings[field] = str(row[field])
+        expected.append(strings)
+    if restored != expected:
+        raise ValueError("Training CSV readback does not match checkpoint history")
+    pending.replace(target)
+    return target
+
+
+def fit_model(
+    model, tokenizer, optimizer, train_loader, validation_loader, run_profile,
+    progress=None, config_path="configs/train.json",
+):
+    import json
+    import math
+    import time
+    from pathlib import Path
+    import torch
+    from src.utils import resolve_project_path
+
+    config = load_train_config(config_path)
+    if run_profile["train_config"] != config:
+        raise ValueError("Run profile must match the current training configuration")
+    saved_source = run_profile["source"]
+    source, patch_content, snapshots = collect_run_source(
+        resolve_project_path(config_path).parent.parent,
+        allow_uncommitted=saved_source["allow_uncommitted"],
+    )
+    output_dir = Path(run_profile["paths"]["output_dir"])
+    checkpoint_dir = Path(run_profile["paths"]["checkpoint_dir"])
+    if source["git_commit"] != saved_source["git_commit"]:
+        raise ValueError("Current source commit does not match the run profile")
+    saved_patch_path = run_profile["source_changes"]["patch_file"]
+    saved_patch = b""
+    if saved_patch_path is not None:
+        saved_patch = (output_dir / saved_patch_path).read_bytes()
+    if patch_content != saved_patch or set(snapshots) != set(run_profile["source_changes"]["untracked_snapshot_files"]):
+        raise ValueError("Current source changes do not match the saved run snapshot")
+    for relative_path, content in snapshots.items():
+        if (output_dir / "source_snapshot" / relative_path).read_bytes() != content:
+            raise ValueError("Current untracked source does not match the saved run snapshot")
+    for name in ["last_pending", "last_previous", "best_pending", "best_previous"]:
+        if (checkpoint_dir / name).exists():
+            raise RuntimeError("Checkpoint staging remains; inspect it before continuing training")
+    train_ids = capture_train_loader_state(train_loader)["sample_ids"]
+    validation_ids = []
+    for sample in validation_loader.dataset:
+        validation_ids.append(sample["id"])
+    if len(train_ids) != run_profile["data"]["train_sample_count"] or len(validation_ids) != run_profile["data"]["validation_sample_count"]:
+        raise ValueError("Training or validation sample count does not match the run profile")
+    if set(train_ids).intersection(validation_ids):
+        raise ValueError("Train and validation samples must be disjoint")
+    if progress is None:
+        if len(optimizer.state) != 0 or (checkpoint_dir / "last").exists() or (checkpoint_dir / "best").exists() or (output_dir / "training_history.csv").exists():
+            raise ValueError("A fresh training run requires a fresh optimizer and unused run directory")
+        progress = {"completed_epochs": 0, "global_step": 0, "training_history": []}
+    else:
+        progress = dict(progress)
+    history = list(progress.get("training_history", []))
+    completed = progress["completed_epochs"]
+    updates_per_epoch = (len(train_loader) + config["gradient_accumulation_steps"] - 1) // config["gradient_accumulation_steps"]
+    if len(history) != completed or not 0 <= completed <= config["num_epochs"]:
+        raise ValueError("Checkpoint must contain one history row for every completed epoch")
+    if progress["global_step"] != completed * updates_per_epoch:
+        raise ValueError("Checkpoint global step does not match completed full training epochs")
+    for index, row in enumerate(history, 1):
+        if row["epoch"] != index or row["global_step"] != index * updates_per_epoch:
+            raise ValueError("Checkpoint history has repeated or inconsistent epochs")
+    write_training_history(output_dir, history)
+    device = next(model.parameters()).device
+    invocation_started_at = time.perf_counter()
+    for epoch_index in range(completed, config["num_epochs"]):
+        print("Bắt đầu epoch:", epoch_index + 1, flush=True)
+        training = train_epoch(model, train_loader, optimizer, progress["global_step"], config_path)
+        torch.cuda.synchronize(device)
+        validation_started_at = time.perf_counter()
+        validation = validate_model(model, validation_loader, validation_ids)
+        torch.cuda.synchronize(device)
+        validation_seconds = time.perf_counter() - validation_started_at
+        row = {
+            "epoch": epoch_index + 1,
+            "global_step": training["global_step"],
+            "train_loss": training["train_loss"],
+            "validation_loss": validation["validation_loss"],
+            "train_sample_count": training["train_sample_count"],
+            "validation_sample_count": validation["sample_count"],
+            "train_valid_target_tokens": training["train_valid_target_tokens"],
+            "validation_valid_target_tokens": validation["valid_target_token_count"],
+            "learning_rate": optimizer.param_groups[0]["lr"],
+            "train_seconds": training["train_seconds"],
+            "validation_seconds": validation_seconds,
+            "epoch_compute_seconds": training["train_seconds"] + validation_seconds,
+        }
+        if not math.isfinite(row["train_loss"]) or not math.isfinite(row["validation_loss"]):
+            raise ValueError("Epoch loss contains NaN or Inf")
+        progress["completed_epochs"] = epoch_index + 1
+        progress["global_step"] = training["global_step"]
+        progress, decision = update_best_checkpoint(model, tokenizer, checkpoint_dir, progress, validation, config_path)
+        history.append(row)
+        progress["training_history"] = list(history)
+        save_last_checkpoint(model, tokenizer, optimizer, checkpoint_dir, progress, train_loader, config_path)
+        write_training_history(output_dir, history)
+        print("Hoàn thành epoch:", epoch_index + 1, "Train loss:", row["train_loss"], "Validation loss:", row["validation_loss"], "Best được cập nhật:", decision["updated"], flush=True)
+    summary = {
+        "run_id": run_profile["run_id"],
+        "run_status": "completed",
+        "completed_epochs": progress["completed_epochs"],
+        "global_step": progress["global_step"],
+        "history": history,
+        "best_epoch": progress["best_epoch"],
+        "best_global_step": progress["best_global_step"],
+        "best_validation_loss": progress["best_validation_loss"],
+        "checkpoint_dir": str(checkpoint_dir),
+        "history_file": str(output_dir / "training_history.csv"),
+        "current_invocation_seconds": time.perf_counter() - invocation_started_at,
+        "resume_boundary": "end_of_epoch",
+        "test_content_read": False,
+    }
+    summary_path = output_dir / "training_summary.json"
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    if json.loads(summary_path.read_text(encoding="utf-8")) != summary:
+        raise ValueError("Training summary readback failed")
+    return summary

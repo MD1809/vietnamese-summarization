@@ -38,6 +38,9 @@ from src.train import (
     preview_train_epoch_ids,
     update_best_checkpoint,
     load_best_checkpoint,
+    train_epoch,
+    write_training_history,
+    fit_model,
 )
 
 
@@ -1207,6 +1210,130 @@ class BestCheckpointTests(unittest.TestCase):
             loaded_model.to.assert_called_once_with(device="cuda:0", dtype="float32")
             loaded_model.eval.assert_called_once_with()
             modules["transformers"].AutoModelForSeq2SeqLM.from_pretrained.assert_called_once_with(root / "best", local_files_only=True)
+
+
+class FullTrainingTests(unittest.TestCase):
+    def loader(self, count):
+        batches = []
+        for index in range(count):
+            batches.append({"sample_ids": ["train-" + str(index)]})
+        loader = Mock()
+        loader.dataset = []
+        for batch in batches:
+            loader.dataset.append({"id": batch["sample_ids"][0]})
+
+        def iterator():
+            return iter(batches)
+
+        loader.__iter__ = Mock(side_effect=iterator)
+        loader.__len__ = Mock(return_value=count)
+        loader.generator = Mock()
+        loader.num_workers = 0
+        loader.batch_size = 1
+        loader.drop_last = False
+        return loader
+
+    def test_epoch_streams_full_group_and_tail_and_counts_tokens_correctly(self):
+        loader = self.loader(10)
+        optimizer = types.SimpleNamespace(state={})
+        torch_module, model = ResourceCheckTests().examples()
+        sizes = []
+
+        def train_group(model, group, optimizer, config_path):
+            sizes.append(len(group))
+            step = Mock()
+            step.item.return_value = len(sizes)
+            optimizer.state["example"] = {"step": step}
+            ids = []
+            for batch in group:
+                ids.extend(batch["sample_ids"])
+            return {"sample_ids": ids, "total_valid_target_tokens": len(group), "token_weighted_group_loss": float(len(sizes))}
+
+        with patch.dict(sys.modules, {"torch": torch_module}):
+            with patch("src.train.train_accumulated_group", side_effect=train_group):
+                report = train_epoch(model, loader, optimizer)
+        self.assertEqual(sizes, [8, 2])
+        self.assertEqual(report["global_step"], 2)
+        self.assertEqual(report["train_sample_count"], 10)
+        self.assertEqual(report["train_valid_target_tokens"], 10)
+        self.assertEqual(report["train_loss"], 1.2)
+
+    def context(self, root):
+        config = json.loads(Path("configs/train.json").read_text(encoding="utf-8"))
+        profile = {
+            "run_id": "test-run", "train_config": config,
+            "source": {"git_commit": "test-commit", "allow_uncommitted": False},
+            "source_changes": {"patch_file": None, "untracked_snapshot_files": []},
+            "paths": {"output_dir": str(root / "outputs"), "checkpoint_dir": str(root / "checkpoints")},
+            "data": {"train_sample_count": 10, "validation_sample_count": 1},
+        }
+        return profile
+
+    def test_full_loop_and_resume_rebuild_csv_without_duplicate_epochs(self):
+        torch_module, model = ResourceCheckTests().examples()
+        train_loader = self.loader(10)
+        validation_loader = types.SimpleNamespace(dataset=[{"id": "validation-x"}])
+        optimizer = types.SimpleNamespace(state={}, param_groups=[{"lr": 0.00005}])
+        checkpoints = []
+
+        def fake_epoch(model, loader, optimizer, global_step, config_path):
+            return {"global_step": global_step + 2, "train_loss": 2.0, "train_sample_count": 10, "train_valid_target_tokens": 30, "train_seconds": 1.0}
+
+        def fake_best(model, tokenizer, root, progress, validation, config_path):
+            updated = dict(progress)
+            updated["best_validation_loss"] = validation["validation_loss"]
+            updated["best_epoch"] = updated["completed_epochs"]
+            updated["best_global_step"] = updated["global_step"]
+            return updated, {"updated": True}
+
+        def fake_save(model, tokenizer, optimizer, root, progress, loader, config_path):
+            checkpoints.append(copy.deepcopy(progress))
+
+        with tempfile.TemporaryDirectory() as directory:
+            profile = self.context(Path(directory))
+            with patch.dict(sys.modules, {"torch": torch_module}):
+                with patch("src.train.collect_run_source", return_value=({"git_commit": "test-commit"}, b"", {})):
+                    with patch("src.train.train_epoch", side_effect=fake_epoch):
+                        with patch("src.train.validate_model", return_value={"validation_loss": 1.0, "sample_count": 1, "valid_target_token_count": 5}):
+                            with patch("src.train.update_best_checkpoint", side_effect=fake_best):
+                                with patch("src.train.save_last_checkpoint", side_effect=fake_save):
+                                    with patch("builtins.print"):
+                                        first = fit_model(model, "tokenizer", optimizer, train_loader, validation_loader, profile)
+                                        resumed = fit_model(model, "tokenizer", optimizer, train_loader, validation_loader, profile, progress=checkpoints[0])
+            self.assertEqual(first["completed_epochs"], 3)
+            self.assertEqual(resumed["global_step"], 6)
+            self.assertEqual([row["epoch"] for row in resumed["history"]], [1, 2, 3])
+            import csv
+            with Path(resumed["history_file"]).open(encoding="utf-8", newline="") as file:
+                rows = list(csv.DictReader(file))
+            self.assertEqual([row["epoch"] for row in rows], ["1", "2", "3"])
+            self.assertEqual([row["global_step"] for row in rows], ["2", "4", "6"])
+            self.assertEqual(len(checkpoints), 5)
+            self.assertEqual(len(checkpoints[-1]["training_history"]), 3)
+
+    def test_changed_source_is_rejected_before_training(self):
+        torch_module, model = ResourceCheckTests().examples()
+        with tempfile.TemporaryDirectory() as directory:
+            profile = self.context(Path(directory))
+            with patch.dict(sys.modules, {"torch": torch_module}):
+                with patch("src.train.collect_run_source", return_value=({"git_commit": "test-commit"}, b"changed patch", {})):
+                    with patch("src.train.train_epoch") as train:
+                        with self.assertRaisesRegex(ValueError, "source changes do not match"):
+                            fit_model(model, "tokenizer", Mock(), self.loader(10), Mock(), profile)
+            train.assert_not_called()
+
+    def test_old_checkpoint_without_full_epoch_history_is_rejected(self):
+        torch_module, model = ResourceCheckTests().examples()
+        with tempfile.TemporaryDirectory() as directory:
+            profile = self.context(Path(directory))
+            with patch.dict(sys.modules, {"torch": torch_module}):
+                with patch("src.train.collect_run_source", return_value=({"git_commit": "test-commit"}, b"", {})):
+                    with self.assertRaisesRegex(ValueError, "history row"):
+                        fit_model(
+                            model, "tokenizer", Mock(), self.loader(10),
+                            types.SimpleNamespace(dataset=[{"id": "validation-x"}]), profile,
+                            progress={"completed_epochs": 1, "global_step": 2},
+                        )
 
 
 if __name__ == "__main__":

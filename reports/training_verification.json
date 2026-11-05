@@ -1,0 +1,85 @@
+{
+  "run_id": "vit5_finetuning_20261105_181249_692559",
+  "completed_epochs": 3,
+  "global_step": 750,
+  "history_row_count": 3,
+  "csv_matches_checkpoint_history_check_passed": true,
+  "last_optimizer_step_values": [
+    750
+  ],
+  "last_restoration": {
+    "optimizer_state_check_passed": true,
+    "optimizer_state_tensor_count_checked": 771,
+    "optimizer_parameter_state_count": 257,
+    "optimizer_step_values": [
+      750
+    ],
+    "random_state_check_passed": true,
+    "restored_progress": {
+      "completed_epochs": 3,
+      "global_step": 750,
+      "training_history": [
+        {
+          "epoch": 1,
+          "global_step": 250,
+          "train_loss": 2.39963192315952,
+          "validation_loss": 2.114179343618563,
+          "train_sample_count": 2000,
+          "validation_sample_count": 201,
+          "train_valid_target_tokens": 109290,
+          "validation_valid_target_tokens": 11151,
+          "learning_rate": 5e-05,
+          "train_seconds": 465.38866674200017,
+          "validation_seconds": 16.829189830999894,
+          "epoch_compute_seconds": 482.21785657300006
+        },
+        {
+          "epoch": 2,
+          "global_step": 500,
+          "train_loss": 1.8861828593673726,
+          "validation_loss": 2.103290012113482,
+          "train_sample_count": 2000,
+          "validation_sample_count": 201,
+          "train_valid_target_tokens": 109290,
+          "validation_valid_target_tokens": 11151,
+          "learning_rate": 5e-05,
+          "train_seconds": 463.21163385,
+          "validation_seconds": 16.635690625999814,
+          "epoch_compute_seconds": 479.8473244759998
+        },
+        {
+          "epoch": 3,
+          "global_step": 750,
+          "train_loss": 1.5654862234703477,
+          "validation_loss": 2.1777060868686418,
+          "train_sample_count": 2000,
+          "validation_sample_count": 201,
+          "train_valid_target_tokens": 109290,
+          "validation_valid_target_tokens": 11151,
+          "learning_rate": 5e-05,
+          "train_seconds": 463.4472387279993,
+          "validation_seconds": 16.589785614999528,
+          "epoch_compute_seconds": 480.03702434299885
+        }
+      ],
+      "best_validation_loss": 2.103290012113482,
+      "best_epoch": 2,
+      "best_global_step": 500
+    },
+    "configuration_check_passed": true,
+    "train_loader_state_restored": true,
+    "model_device": "cuda:0",
+    "model_dtype": "torch.float32",
+    "loaded_checkpoint_dir": "/content/drive/MyDrive/vietnamese-summarization/checkpoints/vit5_finetuning_20261105_181249_692559/last",
+    "resume_boundary": "end_of_epoch",
+    "next_epoch": 4
+  },
+  "best_epoch": 2,
+  "best_global_step": 500,
+  "best_validation_loss": 2.103290012113482,
+  "best_reload_validation_loss": 2.103290012113482,
+  "best_reload_check_passed": true,
+  "minimum_validation_loss_check_passed": true,
+  "validation_sample_count": 201,
+  "test_content_read": false
+}
