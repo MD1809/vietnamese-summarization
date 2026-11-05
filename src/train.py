@@ -384,3 +384,167 @@ def validate_model(model, validation_loader, expected_sample_ids):
         "optimizer_step_run": False,
         "test_content_read": False,
     }
+
+
+def capture_random_state():
+    import random
+    import numpy as np
+    import torch
+
+    numpy_state = np.random.get_state()
+    return {
+        "python": random.getstate(),
+        "numpy": {
+            "name": numpy_state[0],
+            "keys": numpy_state[1].tolist(),
+            "position": numpy_state[2],
+            "has_gauss": numpy_state[3],
+            "cached_gaussian": numpy_state[4],
+        },
+        "torch_cpu": torch.get_rng_state(),
+        "torch_cuda": torch.cuda.get_rng_state_all(),
+    }
+
+
+def restore_random_state(state):
+    import random
+    import numpy as np
+    import torch
+
+    if len(state["torch_cuda"]) != torch.cuda.device_count():
+        raise ValueError("Checkpoint CUDA device count does not match this runtime")
+    random.setstate(state["python"])
+    numpy_state = state["numpy"]
+    np.random.set_state((
+        numpy_state["name"],
+        np.array(numpy_state["keys"], dtype=np.uint32),
+        numpy_state["position"],
+        numpy_state["has_gauss"],
+        numpy_state["cached_gaussian"],
+    ))
+    torch.set_rng_state(state["torch_cpu"])
+    torch.cuda.set_rng_state_all(state["torch_cuda"])
+    restored = capture_random_state()
+    if restored["python"] != state["python"] or restored["numpy"] != state["numpy"]:
+        raise ValueError("Python or NumPy random state was not restored")
+    if not torch.equal(restored["torch_cpu"], state["torch_cpu"]):
+        raise ValueError("PyTorch CPU random state was not restored")
+    for index in range(len(state["torch_cuda"])):
+        if not torch.equal(restored["torch_cuda"][index], state["torch_cuda"][index]):
+            raise ValueError("PyTorch CUDA random state was not restored")
+
+
+def save_training_checkpoint(
+    model, tokenizer, optimizer, checkpoint_dir, progress, config_path="configs/train.json",
+):
+    from pathlib import Path
+    import torch
+
+    config = load_train_config(config_path)
+    for key in ["completed_epochs", "global_step"]:
+        if type(progress.get(key)) is not int or progress[key] < 0:
+            raise ValueError("Checkpoint progress must contain nonnegative integer counters")
+    optimizer_state = optimizer.state_dict()
+    if len(optimizer_state["state"]) == 0:
+        raise ValueError("Checkpoint check requires an optimizer that has completed a step")
+    checkpoint_dir = Path(checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=False)
+    model.save_pretrained(checkpoint_dir, safe_serialization=True)
+    tokenizer.save_pretrained(checkpoint_dir)
+    torch.save({
+        "train_config": config,
+        "progress": dict(progress),
+        "optimizer_state_dict": optimizer_state,
+        "random_state": capture_random_state(),
+    }, checkpoint_dir / "training_state.pt")
+
+
+def load_training_checkpoint(checkpoint_dir, config_path="configs/train.json"):
+    from pathlib import Path
+    import torch
+    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+    config = load_train_config(config_path)
+    if config["precision"] != "fp32" or not torch.cuda.is_available():
+        raise RuntimeError("Checkpoint check requires CUDA and the approved fp32 configuration")
+    checkpoint_dir = Path(checkpoint_dir)
+    state = torch.load(
+        checkpoint_dir / "training_state.pt",
+        map_location="cpu",
+        weights_only=True,
+    )
+    if state["train_config"] != config:
+        raise ValueError("Checkpoint configuration does not match current train configuration")
+    tokenizer = AutoTokenizer.from_pretrained(
+        checkpoint_dir, use_fast=False, local_files_only=True,
+    )
+    model = AutoModelForSeq2SeqLM.from_pretrained(checkpoint_dir, local_files_only=True)
+    model = model.to(device="cuda:0", dtype=torch.float32)
+    model.eval()
+    optimizer = create_optimizer(model, config_path)
+    saved_optimizer = state["optimizer_state_dict"]
+    optimizer.load_state_dict(saved_optimizer)
+    restored_optimizer = optimizer.state_dict()
+    if restored_optimizer["param_groups"] != saved_optimizer["param_groups"]:
+        raise ValueError("Optimizer parameter groups were not restored")
+    if set(restored_optimizer["state"]) != set(saved_optimizer["state"]):
+        raise ValueError("Optimizer parameter states were not restored")
+    tensor_count = 0
+    step_values = set()
+    for parameter_id, saved_values in saved_optimizer["state"].items():
+        restored_values = restored_optimizer["state"][parameter_id]
+        if set(restored_values) != set(saved_values):
+            raise ValueError("Optimizer state fields were not restored")
+        for key, value in saved_values.items():
+            if not torch.equal(value.cpu(), restored_values[key].detach().cpu()):
+                raise ValueError("Optimizer state tensor was not restored: " + key)
+            tensor_count = tensor_count + 1
+        step_values.add(int(restored_values["step"].item()))
+    restore_random_state(state["random_state"])
+    report = {
+        "optimizer_state_check_passed": True,
+        "optimizer_state_tensor_count_checked": tensor_count,
+        "optimizer_parameter_state_count": len(saved_optimizer["state"]),
+        "optimizer_step_values": sorted(step_values),
+        "random_state_check_passed": True,
+        "restored_progress": dict(state["progress"]),
+        "configuration_check_passed": True,
+        "model_device": str(next(model.parameters()).device),
+        "model_dtype": str(next(model.parameters()).dtype),
+    }
+    return model, tokenizer, optimizer, dict(state["progress"]), report
+
+
+def generate_checkpoint_probe(model, tokenizer, source_text, config_path="configs/train.json"):
+    import torch
+    from src.utils import load_generation_config
+
+    config = load_train_config(config_path)
+    generation_config = load_generation_config()
+    if generation_config["do_sample"] or generation_config["num_beams"] != 1:
+        raise ValueError("G4.5 expects greedy decoding without sampling")
+    encoded = tokenizer(
+        config["task_prefix"] + source_text,
+        return_tensors="pt",
+        max_length=config["max_source_length"],
+        truncation=True,
+        padding=False,
+    )
+    device = next(model.parameters()).device
+    model.eval()
+    with torch.no_grad():
+        generated = model.generate(
+            input_ids=encoded["input_ids"].to(device),
+            attention_mask=encoded["attention_mask"].to(device),
+            do_sample=False,
+            num_beams=1,
+            max_new_tokens=generation_config["max_new_tokens"],
+        )
+    generated_ids = generated[0].tolist()
+    return {
+        "input_ids": encoded["input_ids"][0].tolist(),
+        "attention_mask": encoded["attention_mask"][0].tolist(),
+        "generated_ids": generated_ids,
+        "generated_text": tokenizer.decode(generated_ids, skip_special_tokens=True),
+        "generation_config": generation_config,
+    }

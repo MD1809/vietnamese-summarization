@@ -11,12 +11,17 @@ from unittest.mock import Mock, patch
 from src.train import (
     check_forward_batch,
     check_optimization_step,
+    capture_random_state,
     create_optimizer,
     create_small_sample_batches,
     load_vit5_model,
+    load_training_checkpoint,
     measure_small_sample_loss,
+    generate_checkpoint_probe,
+    restore_random_state,
     run_small_sample_check,
     validate_model,
+    save_training_checkpoint,
 )
 
 
@@ -44,6 +49,9 @@ class TensorExample:
 
     def item(self):
         return self.values
+
+    def __getitem__(self, index):
+        return TensorExample(self.values[index], shape=(len(self.values[index]),))
 
 
 class NoGradientExample:
@@ -495,6 +503,166 @@ class ValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "NaN or Inf"):
                 validate_model(model, [batch], ["sample-a"])
         self.assertTrue(model.training)
+
+
+class CheckpointTests(unittest.TestCase):
+    def tensor(self, value):
+        tensor = Mock()
+        tensor.cpu.return_value = tensor
+        tensor.detach.return_value = tensor
+        tensor.item.return_value = value
+        return tensor
+
+    def examples(self):
+        config = json.loads(Path("configs/train.json").read_text(encoding="utf-8"))
+        optimizer_state = {
+            "param_groups": [{"lr": 0.00005, "params": [0]}],
+            "state": {0: {
+                "step": self.tensor(1),
+                "exp_avg": self.tensor(0.2),
+                "exp_avg_sq": self.tensor(0.03),
+            }},
+        }
+        saved = {
+            "train_config": config,
+            "progress": {"completed_epochs": 1, "global_step": 1},
+            "optimizer_state_dict": optimizer_state,
+            "random_state": {"example": "random-state"},
+        }
+        torch_module = types.SimpleNamespace(
+            load=Mock(return_value=saved), save=Mock(),
+            cuda=types.SimpleNamespace(is_available=Mock(return_value=True)),
+            float32="float32", equal=Mock(return_value=True),
+        )
+        model = Mock()
+        model.to.return_value = model
+        parameter = types.SimpleNamespace(device="cuda:0", dtype="torch.float32")
+
+        def parameters():
+            return iter([parameter])
+
+        model.parameters.side_effect = parameters
+        auto_model = Mock()
+        auto_model.from_pretrained.return_value = model
+        auto_tokenizer = Mock()
+        tokenizer = auto_tokenizer.from_pretrained.return_value
+        optimizer = Mock()
+        optimizer.state_dict.return_value = optimizer_state
+        modules = {
+            "torch": torch_module,
+            "transformers": types.SimpleNamespace(
+                AutoModelForSeq2SeqLM=auto_model, AutoTokenizer=auto_tokenizer,
+            ),
+        }
+        return modules, saved, model, tokenizer, optimizer
+
+    def test_save_contains_optimizer_progress_config_rng_and_refuses_overwrite(self):
+        modules, saved, model, tokenizer, optimizer = self.examples()
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "last"
+            with patch.dict(sys.modules, modules):
+                with patch("src.train.capture_random_state", return_value=saved["random_state"]):
+                    save_training_checkpoint(model, tokenizer, optimizer, target, saved["progress"])
+                    with self.assertRaises(FileExistsError):
+                        save_training_checkpoint(model, tokenizer, optimizer, target, saved["progress"])
+        model.save_pretrained.assert_called_once_with(target, safe_serialization=True)
+        tokenizer.save_pretrained.assert_called_once_with(target)
+        payload, state_path = modules["torch"].save.call_args.args
+        self.assertEqual(payload, saved)
+        self.assertEqual(state_path, target / "training_state.pt")
+
+    def test_load_is_local_restores_optimizer_counters_and_rng(self):
+        modules, saved, model, tokenizer, optimizer = self.examples()
+        with patch.dict(sys.modules, modules):
+            with patch("src.train.create_optimizer", return_value=optimizer):
+                with patch("src.train.restore_random_state") as restore:
+                    result = load_training_checkpoint("example/last")
+        self.assertIs(result[0], model)
+        self.assertIs(result[1], tokenizer)
+        self.assertIs(result[2], optimizer)
+        self.assertEqual(result[3], saved["progress"])
+        self.assertEqual(result[4]["optimizer_step_values"], [1])
+        self.assertEqual(result[4]["optimizer_state_tensor_count_checked"], 3)
+        optimizer.load_state_dict.assert_called_once_with(saved["optimizer_state_dict"])
+        restore.assert_called_once_with(saved["random_state"])
+        modules["torch"].load.assert_called_once_with(
+            Path("example/last/training_state.pt"), map_location="cpu", weights_only=True,
+        )
+        modules["transformers"].AutoTokenizer.from_pretrained.assert_called_once_with(
+            Path("example/last"), use_fast=False, local_files_only=True,
+        )
+
+    def test_load_rejects_changed_configuration_before_loading_model(self):
+        modules, saved, model, tokenizer, optimizer = self.examples()
+        saved["train_config"]["learning_rate"] = 0.001
+        with patch.dict(sys.modules, modules):
+            with self.assertRaisesRegex(ValueError, "configuration does not match"):
+                load_training_checkpoint("example/last")
+        modules["transformers"].AutoModelForSeq2SeqLM.from_pretrained.assert_not_called()
+
+    def test_load_rejects_optimizer_tensor_mismatch(self):
+        modules, saved, model, tokenizer, optimizer = self.examples()
+        modules["torch"].equal.return_value = False
+        with patch.dict(sys.modules, modules):
+            with patch("src.train.create_optimizer", return_value=optimizer):
+                with patch("src.train.restore_random_state") as restore:
+                    with self.assertRaisesRegex(ValueError, "state tensor was not restored"):
+                        load_training_checkpoint("example/last")
+        restore.assert_not_called()
+
+    def test_probe_uses_no_grad_greedy_and_never_passes_labels(self):
+        state, torch_module, model, batch = ForwardTests().examples()
+        tokenizer = Mock()
+        tokenizer.return_value = {
+            "input_ids": TensorExample([[10, 11, 1]]),
+            "attention_mask": TensorExample([[1, 1, 1]]),
+        }
+
+        def generate(**kwargs):
+            self.assertFalse(model.training)
+            self.assertTrue(state["no_grad"])
+            self.assertNotIn("labels", kwargs)
+            return TensorExample([[0, 8, 1]])
+
+        model.generate = Mock(side_effect=generate)
+        tokenizer.decode.return_value = "summary"
+        with patch.dict(sys.modules, {"torch": torch_module}):
+            report = generate_checkpoint_probe(model, tokenizer, "source")
+        self.assertEqual(report["input_ids"], [10, 11, 1])
+        self.assertEqual(report["generated_ids"], [0, 8, 1])
+        self.assertEqual(report["generated_text"], "summary")
+        self.assertIs(model.generate.call_args.kwargs["do_sample"], False)
+        self.assertEqual(model.generate.call_args.kwargs["num_beams"], 1)
+
+    def test_random_state_restores_python_numpy_cpu_and_cuda(self):
+        import random
+
+        python_state = random.getstate()
+        numpy_values = types.SimpleNamespace(tolist=Mock(return_value=[1, 2, 3]))
+        numpy_module = types.SimpleNamespace(
+            random=types.SimpleNamespace(
+                get_state=Mock(return_value=("MT19937", numpy_values, 4, 0, 0.0)),
+                set_state=Mock(),
+            ),
+            array=Mock(return_value="numpy-keys"), uint32="uint32",
+        )
+        torch_module = types.SimpleNamespace(
+            get_rng_state=Mock(return_value="cpu-state"), set_rng_state=Mock(),
+            equal=Mock(return_value=True),
+            cuda=types.SimpleNamespace(
+                get_rng_state_all=Mock(return_value=["cuda-state"]),
+                set_rng_state_all=Mock(), device_count=Mock(return_value=1),
+            ),
+        )
+        with patch.dict(sys.modules, {"torch": torch_module, "numpy": numpy_module}):
+            saved = capture_random_state()
+            random.random()
+            restore_random_state(saved)
+        self.assertEqual(random.getstate(), python_state)
+        self.assertEqual(saved["numpy"]["keys"], [1, 2, 3])
+        numpy_module.random.set_state.assert_called_once_with(("MT19937", "numpy-keys", 4, 0, 0.0))
+        torch_module.set_rng_state.assert_called_once_with("cpu-state")
+        torch_module.cuda.set_rng_state_all.assert_called_once_with(["cuda-state"])
 
 
 if __name__ == "__main__":
