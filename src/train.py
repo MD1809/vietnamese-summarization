@@ -124,3 +124,111 @@ def check_forward_batch(model, batch):
         "optimizer_step_run": False,
         "training_memory_verified": False,
     }
+
+
+def create_optimizer(model, config_path="configs/train.json"):
+    import torch
+
+    config = load_train_config(config_path)
+    if config["optimizer"] != "AdamW" or config["precision"] != "fp32":
+        raise ValueError("G4.2 expects AdamW and fp32")
+    return torch.optim.AdamW(
+        model.parameters(),
+        lr=config["learning_rate"],
+        weight_decay=config["weight_decay"],
+        foreach=False,
+    )
+
+
+def check_optimization_step(model, batch, optimizer):
+    import torch
+
+    inputs = batch["model_inputs"]
+    if set(inputs) != {"input_ids", "attention_mask", "labels"}:
+        raise ValueError("Optimization expects source IDs, mask and original labels only")
+    if inputs["input_ids"].shape[0] != 1 or inputs["labels"].shape[0] != 1:
+        raise ValueError("G4.2 expects batch size 1")
+    label_rows = inputs["labels"].tolist()
+    valid_tokens = 0
+    for row in label_rows:
+        for token_id in row:
+            if token_id != -100:
+                valid_tokens = valid_tokens + 1
+    if valid_tokens == 0:
+        raise ValueError("Loss requires at least one non-masked target token")
+
+    first_parameter = next(model.parameters())
+    if first_parameter.dtype != torch.float32:
+        raise ValueError("G4.2 expects fp32 model weights")
+    model_inputs = {}
+    for field in ["input_ids", "attention_mask", "labels"]:
+        model_inputs[field] = inputs[field].to(first_parameter.device)
+
+    model.train()
+    optimizer.zero_grad(set_to_none=True)
+    outputs = model(
+        input_ids=model_inputs["input_ids"],
+        attention_mask=model_inputs["attention_mask"],
+        labels=model_inputs["labels"],
+        return_dict=True,
+        use_cache=False,
+    )
+    loss = outputs.loss
+    if loss is None or len(loss.shape) != 0:
+        raise ValueError("Optimization must return a scalar loss")
+    if not torch.isfinite(loss).all().item():
+        raise ValueError("Optimization loss contains NaN or Inf")
+    if not loss.requires_grad:
+        raise ValueError("Optimization loss must have a gradient graph")
+    if model_inputs["labels"].tolist() != label_rows:
+        raise ValueError("Original labels changed during optimization")
+    loss.backward()
+
+    selected_name = None
+    selected_parameter = None
+    gradient_tensor_count = 0
+    for name, parameter in model.named_parameters():
+        if parameter.grad is None:
+            continue
+        gradient_tensor_count = gradient_tensor_count + 1
+        if not torch.isfinite(parameter.grad).all().item():
+            raise ValueError("Gradient contains NaN or Inf: " + name)
+        if parameter.grad.detach().abs().max().item() == 0:
+            continue
+        if selected_parameter is None or parameter.numel() < selected_parameter.numel():
+            selected_name = name
+            selected_parameter = parameter
+    if selected_parameter is None:
+        raise ValueError("No parameter has a nonzero gradient")
+
+    gradient_max_abs = selected_parameter.grad.detach().abs().max().item()
+    parameter_before = selected_parameter.detach().clone()
+    optimizer.step()
+    parameter_after = selected_parameter.detach()
+    if not torch.isfinite(parameter_after).all().item():
+        raise ValueError("Updated parameter contains NaN or Inf")
+    parameter_change = (parameter_after - parameter_before).abs().max().item()
+    if parameter_change == 0:
+        raise ValueError("Selected parameter did not change after optimizer.step")
+
+    return {
+        "sample_ids": list(batch["sample_ids"]),
+        "model_device": str(first_parameter.device),
+        "model_dtype": str(first_parameter.dtype),
+        "mode": "train",
+        "input_shape": list(model_inputs["input_ids"].shape),
+        "labels_shape": list(model_inputs["labels"].shape),
+        "loss_before_update": loss.item(),
+        "valid_target_token_count": valid_tokens,
+        "gradient_tensor_count": gradient_tensor_count,
+        "selected_parameter": selected_name,
+        "gradient_max_abs": gradient_max_abs,
+        "parameter_change_max_abs": parameter_change,
+        "finite_gradients_check_passed": True,
+        "nonzero_gradient_check_passed": True,
+        "parameter_changed_check_passed": True,
+        "original_labels_check_passed": True,
+        "optimizer_steps": 1,
+        "gradient_accumulation_applied": False,
+        "test_content_read": False,
+    }

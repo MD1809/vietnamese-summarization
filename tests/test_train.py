@@ -8,7 +8,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from src.train import check_forward_batch, load_vit5_model
+from src.train import (
+    check_forward_batch,
+    check_optimization_step,
+    create_optimizer,
+    load_vit5_model,
+)
 
 
 class TensorExample:
@@ -213,6 +218,115 @@ class ForwardTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "fp32"):
                     load_vit5_model(path)
         auto.from_pretrained.assert_not_called()
+
+
+class OptimizationTests(unittest.TestCase):
+    def examples(self):
+        state, torch_module, forward_model, batch = ForwardTests().examples()
+        parameter = Mock()
+        parameter.device = "cuda:0"
+        parameter.dtype = "float32"
+        parameter.finite = True
+        parameter.shape = (3,)
+        parameter.numel.return_value = 3
+        parameter.grad.finite = True
+        parameter.grad.shape = (3,)
+        parameter.grad.detach.return_value.abs.return_value.max.return_value.item.return_value = 0.3
+        after = Mock()
+        after.finite = True
+        after.shape = (3,)
+        difference = Mock()
+        difference.abs.return_value.max.return_value.item.return_value = 0.00005
+        after.__sub__ = Mock(return_value=difference)
+        parameter.detach.return_value = after
+        loss = Mock()
+        loss.shape = ()
+        loss.finite = True
+        loss.requires_grad = True
+        loss.item.return_value = 2.5
+        model = Mock()
+        model.parameters.side_effect = [iter([parameter])]
+        model.named_parameters.return_value = [("layer_norm.weight", parameter)]
+        model.return_value.loss = loss
+        optimizer = Mock()
+        events = Mock()
+        events.attach_mock(model.train, "train")
+        events.attach_mock(optimizer.zero_grad, "zero_grad")
+        events.attach_mock(model, "forward")
+        events.attach_mock(loss.backward, "backward")
+        events.attach_mock(optimizer.step, "step")
+        return torch_module, model, batch, optimizer, parameter, loss, events
+
+    def test_single_step_order_original_labels_and_update_report(self):
+        torch_module, model, batch, optimizer, parameter, loss, events = self.examples()
+        with patch.dict(sys.modules, {"torch": torch_module}):
+            report = check_optimization_step(model, batch, optimizer)
+        operations = []
+        for call in events.mock_calls:
+            if call[0] in ["train", "zero_grad", "forward", "backward", "step"]:
+                operations.append(call[0])
+        self.assertEqual(operations, ["train", "zero_grad", "forward", "backward", "step"])
+        optimizer.zero_grad.assert_called_once_with(set_to_none=True)
+        optimizer.step.assert_called_once_with()
+        self.assertEqual(model.call_args.kwargs["labels"].tolist(), [[8, 9, 1, -100, -100]])
+        self.assertNotIn("decoder_input_ids", model.call_args.kwargs)
+        self.assertIs(model.call_args.kwargs["use_cache"], False)
+        self.assertEqual(report["optimizer_steps"], 1)
+        self.assertEqual(report["gradient_max_abs"], 0.3)
+        self.assertGreater(report["parameter_change_max_abs"], 0)
+        self.assertFalse(report["gradient_accumulation_applied"])
+
+    def test_invalid_loss_stops_before_backward_or_step(self):
+        for kind in ["nan", "no_graph", "missing"]:
+            torch_module, model, batch, optimizer, parameter, loss, events = self.examples()
+            if kind == "nan":
+                loss.item.return_value = float("nan")
+            elif kind == "no_graph":
+                loss.requires_grad = False
+            else:
+                model.return_value.loss = None
+            with patch.dict(sys.modules, {"torch": torch_module}):
+                with self.assertRaises(ValueError):
+                    check_optimization_step(model, batch, optimizer)
+            loss.backward.assert_not_called()
+            optimizer.step.assert_not_called()
+
+    def test_invalid_or_missing_gradients_prevent_update(self):
+        for kind in ["infinite", "zero", "missing"]:
+            torch_module, model, batch, optimizer, parameter, loss, events = self.examples()
+            if kind == "infinite":
+                parameter.grad.finite = False
+            elif kind == "zero":
+                parameter.grad.detach.return_value.abs.return_value.max.return_value.item.return_value = 0
+            else:
+                parameter.grad = None
+            with patch.dict(sys.modules, {"torch": torch_module}):
+                with self.assertRaises(ValueError):
+                    check_optimization_step(model, batch, optimizer)
+            loss.backward.assert_called_once_with()
+            optimizer.step.assert_not_called()
+
+    def test_unchanged_parameter_is_rejected_after_step(self):
+        torch_module, model, batch, optimizer, parameter, loss, events = self.examples()
+        difference = parameter.detach.return_value.__sub__.return_value
+        difference.abs.return_value.max.return_value.item.return_value = 0
+        with patch.dict(sys.modules, {"torch": torch_module}):
+            with self.assertRaisesRegex(ValueError, "did not change"):
+                check_optimization_step(model, batch, optimizer)
+        optimizer.step.assert_called_once_with()
+
+    def test_optimizer_uses_approved_configuration(self):
+        torch_module = types.SimpleNamespace(optim=types.SimpleNamespace(AdamW=Mock()))
+        model = Mock()
+        with patch.dict(sys.modules, {"torch": torch_module}):
+            optimizer = create_optimizer(model)
+        torch_module.optim.AdamW.assert_called_once_with(
+            model.parameters.return_value,
+            lr=0.00005,
+            weight_decay=0.01,
+            foreach=False,
+        )
+        self.assertIs(optimizer, torch_module.optim.AdamW.return_value)
 
 
 if __name__ == "__main__":
