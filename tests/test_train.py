@@ -1,6 +1,7 @@
 import copy
 import json
 import math
+import subprocess
 import sys
 import tempfile
 import types
@@ -12,8 +13,10 @@ from src.train import (
     check_forward_batch,
     check_optimization_step,
     capture_random_state,
+    collect_run_source,
     create_optimizer,
     create_small_sample_batches,
+    create_training_run,
     load_vit5_model,
     load_training_checkpoint,
     measure_small_sample_loss,
@@ -663,6 +666,87 @@ class CheckpointTests(unittest.TestCase):
         numpy_module.random.set_state.assert_called_once_with(("MT19937", "numpy-keys", 4, 0, 0.0))
         torch_module.set_rng_state.assert_called_once_with("cpu-state")
         torch_module.cuda.set_rng_state_all.assert_called_once_with(["cuda-state"])
+
+
+class RunSourceTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.git(["init", "-b", "main"])
+        self.git(["remote", "add", "origin", "https://github.com/MD1809/vietnamese-summarization.git"])
+        (self.root / "src").mkdir()
+        (self.root / "src" / "train.py").write_text("base\n", encoding="utf-8")
+        self.git(["add", "src/train.py"])
+        self.git(["-c", "user.name=Run Test", "-c", "user.email=run-test@example.invalid", "commit", "-m", "initial"])
+        self.git(["update-ref", "refs/remotes/origin/main", "HEAD"])
+
+    def git(self, arguments):
+        return subprocess.run(
+            ["git"] + arguments, cwd=self.root, capture_output=True, check=True,
+        ).stdout
+
+    def test_clean_source_records_actual_commit_and_has_no_patch(self):
+        source, patch_content, snapshots = collect_run_source(self.root)
+        self.assertEqual(source["git_commit"], self.git(["rev-parse", "HEAD"]).decode().strip())
+        self.assertFalse(source["has_uncommitted_changes"])
+        self.assertTrue(source["commit_on_fetched_origin_main"])
+        self.assertEqual(patch_content, b"")
+        self.assertEqual(snapshots, {})
+
+    def test_dirty_source_is_rejected_by_default_and_fully_captured_for_check(self):
+        (self.root / "src" / "train.py").write_text("changed\n", encoding="utf-8")
+        (self.root / "src" / "new.py").write_text("new\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "uncommitted changes"):
+            collect_run_source(self.root)
+        source, patch_content, snapshots = collect_run_source(self.root, allow_uncommitted=True)
+        self.assertTrue(source["has_uncommitted_changes"])
+        self.assertIn(b"+changed", patch_content)
+        self.assertEqual(snapshots, {"src/new.py": (self.root / "src" / "new.py").read_bytes()})
+
+    def test_unpublished_commit_is_rejected(self):
+        (self.root / "src" / "train.py").write_text("changed\n", encoding="utf-8")
+        self.git(["add", "src/train.py"])
+        self.git(["-c", "user.name=Run Test", "-c", "user.email=run-test@example.invalid", "commit", "-m", "local only"])
+        with self.assertRaisesRegex(ValueError, "push and fetch"):
+            collect_run_source(self.root)
+
+
+class TrainingRunTests(unittest.TestCase):
+    def test_profile_and_uncommitted_source_are_saved_and_read_back_without_training(self):
+        config = json.loads(Path("configs/train.json").read_text(encoding="utf-8"))
+        source = {"git_commit": "example-sha", "has_uncommitted_changes": True}
+        torch_module = types.SimpleNamespace(
+            version=types.SimpleNamespace(cuda="13.0"),
+            cuda=types.SimpleNamespace(
+                is_available=Mock(return_value=True), device_count=Mock(return_value=1),
+                get_device_properties=Mock(return_value=types.SimpleNamespace(name="Test GPU", total_memory=16*1024**3)),
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            drive_root = root / "drive"
+            manifest_root = drive_root / "data" / "manifests"
+            manifest_root.mkdir(parents=True)
+            for key in ["subset_manifest", "processed_manifest"]:
+                (drive_root / config["paths"][key]).write_text("{}", encoding="utf-8")
+            result = (config, {"train": [1, 2], "validation": [3]}, {}, "existing-fingerprint")
+            with patch.dict(sys.modules, {"torch": torch_module}):
+                with patch("src.tokenization.load_tokenization_source", return_value=result):
+                    with patch("src.train.collect_run_source", return_value=(source, b"patch", {"src/new.py": b"new source"})):
+                        with patch("importlib.metadata.version", return_value="example-version"):
+                            with patch("src.utils.load_generation_config", return_value={"do_sample": False}):
+                                report = create_training_run(root, drive_root, allow_uncommitted=True)
+            output_dir = Path(report["paths"]["output_dir"])
+            saved = json.loads((output_dir / "config.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved, report)
+            self.assertEqual((output_dir / "source_changes.patch").read_bytes(), b"patch")
+            self.assertEqual((output_dir / "source_snapshot/src/new.py").read_bytes(), b"new source")
+            self.assertEqual(report["data"]["train_sample_count"], 2)
+            self.assertEqual(report["train_config"], config)
+            self.assertEqual(report["run_status"], "setup_only")
+            self.assertFalse(report["data"]["test_content_read"])
+            self.assertFalse(Path(report["paths"]["checkpoint_dir"]).exists())
 
 
 if __name__ == "__main__":

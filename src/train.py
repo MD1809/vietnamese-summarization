@@ -548,3 +548,162 @@ def generate_checkpoint_probe(model, tokenizer, source_text, config_path="config
         "generated_text": tokenizer.decode(generated_ids, skip_special_tokens=True),
         "generation_config": generation_config,
     }
+
+
+def collect_run_source(project_root, allow_uncommitted=False):
+    import subprocess
+    from pathlib import Path
+
+    project_root = Path(project_root).resolve()
+
+    def git(arguments):
+        return subprocess.run(
+            ["git"] + arguments,
+            cwd=project_root,
+            capture_output=True,
+            check=True,
+        ).stdout
+
+    actual_root = Path(git(["rev-parse", "--show-toplevel"]).decode("utf-8").strip()).resolve()
+    if actual_root != project_root:
+        raise ValueError("Run source must be the repository root")
+    repo_url = git(["remote", "get-url", "origin"]).decode("utf-8").strip()
+    if repo_url != "https://github.com/MD1809/vietnamese-summarization.git":
+        raise ValueError("Run source has an unexpected origin URL")
+    commit = git(["rev-parse", "HEAD"]).decode("utf-8").strip()
+    remote_check = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", commit, "refs/remotes/origin/main"],
+        cwd=project_root,
+        capture_output=True,
+    )
+    if remote_check.returncode != 0:
+        raise ValueError("Run source commit must be available on origin/main; push and fetch first")
+    status = git(["status", "--porcelain=v1", "--untracked-files=all"]).decode("utf-8")
+    dirty = status != ""
+    if dirty and not allow_uncommitted:
+        raise ValueError("Run source has uncommitted changes; commit/push before training")
+    patch_content = git(["diff", "--binary", "HEAD"])
+    untracked_files = {}
+    paths = git(["ls-files", "--others", "--exclude-standard", "-z"]).decode("utf-8").split("\0")
+    for relative_path in paths:
+        if relative_path == "":
+            continue
+        allowed = relative_path in ["requirements.txt", "README.md", ".gitignore"]
+        for prefix in ["src/", "configs/", "tests/", "notebooks/"]:
+            if relative_path.startswith(prefix):
+                allowed = True
+        if not allowed:
+            raise ValueError("Unexpected untracked file in runtime repository: " + relative_path)
+        path = (project_root / relative_path).resolve()
+        path.relative_to(project_root)
+        untracked_files[relative_path] = path.read_bytes()
+    return {
+        "repo_url": repo_url,
+        "git_commit": commit,
+        "commit_on_fetched_origin_main": True,
+        "has_uncommitted_changes": dirty,
+        "status_porcelain": status,
+        "allow_uncommitted": allow_uncommitted,
+    }, patch_content, untracked_files
+
+
+def create_training_run(project_root, drive_root, allow_uncommitted=False):
+    import json
+    import platform
+    import shutil
+    from datetime import datetime, timezone
+    from importlib.metadata import version
+    from pathlib import Path
+    import torch
+    from src.data import _prepared_file_path
+    from src.tokenization import load_tokenization_source
+    from src.utils import load_generation_config
+
+    project_root = Path(project_root).resolve()
+    drive_root = Path(drive_root).resolve()
+    config_path = project_root / "configs" / "train.json"
+    config, splits, source_files, subset_fingerprint = load_tokenization_source(
+        drive_root, config_path,
+    )
+    source, patch_content, untracked_files = collect_run_source(project_root, allow_uncommitted)
+    if not torch.cuda.is_available():
+        raise RuntimeError("Run environment requires an available CUDA GPU")
+    gpus = []
+    for index in range(torch.cuda.device_count()):
+        gpu = torch.cuda.get_device_properties(index)
+        gpus.append({
+            "index": index,
+            "name": gpu.name,
+            "total_vram_gib": round(gpu.total_memory / 1024**3, 2),
+        })
+    library_versions = {}
+    for package in [
+        "torch", "transformers", "datasets", "sentencepiece", "rouge-score",
+        "pandas", "matplotlib", "gradio", "numpy",
+    ]:
+        library_versions[package] = version(package)
+    now = datetime.now(timezone.utc)
+    run_id = "vit5_finetuning_" + now.strftime("%Y%m%d_%H%M%S_%f")
+    output_dir = _prepared_file_path(drive_root, config["paths"]["output_dir"]) / run_id
+    checkpoint_dir = _prepared_file_path(drive_root, config["paths"]["checkpoint_dir"]) / run_id
+    report = {
+        "run_id": run_id,
+        "created_at_utc": now.isoformat(),
+        "run_status": "setup_only",
+        "source": source,
+        "train_config": config,
+        "generation_config": load_generation_config(project_root / "configs" / "generation.json"),
+        "environment": {
+            "python_version": platform.python_version(),
+            "library_versions": library_versions,
+            "pytorch_cuda_version": torch.version.cuda,
+            "cuda_available": True,
+            "gpus": gpus,
+        },
+        "data": {
+            "subset_manifest_sha256": subset_fingerprint,
+            "verified_source_files": source_files,
+            "train_sample_count": len(splits["train"]),
+            "validation_sample_count": len(splits["validation"]),
+            "train_validation_readback_check_passed": True,
+            "test_content_read": False,
+        },
+        "paths": {
+            "drive_root": str(drive_root),
+            "output_dir": str(output_dir),
+            "checkpoint_dir": str(checkpoint_dir),
+            "train_file": str(_prepared_file_path(drive_root, config["paths"]["train_file"])),
+            "validation_file": str(_prepared_file_path(drive_root, config["paths"]["validation_file"])),
+            "test_file": str(_prepared_file_path(drive_root, config["paths"]["test_file"])),
+        },
+        "source_changes": {
+            "patch_file": None,
+            "untracked_snapshot_files": [],
+        },
+    }
+    output_dir.mkdir(parents=True, exist_ok=False)
+    if patch_content:
+        (output_dir / "source_changes.patch").write_bytes(patch_content)
+        report["source_changes"]["patch_file"] = "source_changes.patch"
+    for relative_path, content in untracked_files.items():
+        snapshot_path = output_dir / "source_snapshot" / relative_path
+        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        snapshot_path.write_bytes(content)
+        report["source_changes"]["untracked_snapshot_files"].append(relative_path)
+    for key in ["subset_manifest", "processed_manifest"]:
+        source_path = _prepared_file_path(drive_root, config["paths"][key])
+        shutil.copyfile(source_path, output_dir / source_path.name)
+        if (output_dir / source_path.name).read_bytes() != source_path.read_bytes():
+            raise ValueError("Run manifest copy readback failed: " + key)
+        report["paths"][key] = str(source_path)
+    report_path = output_dir / "config.json"
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    restored = json.loads(report_path.read_text(encoding="utf-8"))
+    if restored != report:
+        raise ValueError("Saved training run profile does not match the collected information")
+    if patch_content and (output_dir / "source_changes.patch").read_bytes() != patch_content:
+        raise ValueError("Source patch readback failed")
+    for relative_path, content in untracked_files.items():
+        if (output_dir / "source_snapshot" / relative_path).read_bytes() != content:
+            raise ValueError("Untracked source snapshot readback failed")
+    return report
