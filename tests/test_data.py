@@ -1,6 +1,14 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
-from src.data import convert_wikilingua_sections
+from src.data import (
+    clean_wikilingua_pairs,
+    convert_wikilingua_sections,
+    make_sample_id,
+    save_cleaning_manifest,
+)
 from src.preprocessing import normalize_pairs, normalize_text
 
 
@@ -135,6 +143,99 @@ class NormalizeTextTests(unittest.TestCase):
         self.assertEqual(result[1], {"document": "", "summary": ""})
         self.assertEqual(result[2], {"url": "missing-fields"})
         self.assertEqual(normalize_pairs(result), result)
+
+
+class CleanPairsTests(unittest.TestCase):
+    def make_pair(self, url="A", document="source", summary="summary", section=0):
+        return {
+            "url": url,
+            "document": document,
+            "summary": summary,
+            "source_row_index": 0,
+            "source_section_index": section,
+            "section_name": "original section",
+        }
+
+    def test_id_does_not_depend_on_row_position(self):
+        pair = self.make_pair()
+        moved = pair.copy()
+        moved["source_row_index"] = 99
+        self.assertEqual(make_sample_id(pair), make_sample_id(moved))
+        self.assertNotEqual(make_sample_id(pair), make_sample_id(self.make_pair(section=1)))
+        self.assertEqual(len(make_sample_id(pair)), 67)
+
+    def test_filters_first_reason_only_and_preserves_original(self):
+        invalid = self.make_pair()
+        invalid["document"] = None
+        invalid["summary"] = None
+        wrong_type = self.make_pair()
+        wrong_type["summary"] = 12
+        empty_url = self.make_pair(url=" ")
+        missing = self.make_pair()
+        del missing["summary"]
+        pairs = [invalid, wrong_type, empty_url, missing, self.make_pair()]
+        cleaned, report = clean_wikilingua_pairs(pairs)
+        self.assertEqual(len(cleaned), 1)
+        self.assertEqual(report["removed_counts_by_reason"], {
+            "missing_document": 1,
+            "invalid_type_summary": 1,
+            "empty_url": 1,
+            "missing_summary": 1,
+        })
+        self.assertEqual(report["input_pair_count"], report["retained_pair_count"] + report["removed_pair_count"])
+        self.assertNotIn("id", pairs[-1])
+
+    def test_links_survive_duplicate_removal_and_overlap(self):
+        pairs = [
+            self.make_pair("A", "source-x", "same"),
+            self.make_pair("B", "source-x", "same"),
+            self.make_pair("B", "source-y", "other", 1),
+            self.make_pair("C", "source-y", "different"),
+        ]
+        cleaned, report = clean_wikilingua_pairs(pairs)
+        self.assertEqual(len(cleaned), 3)
+        self.assertEqual(cleaned[0]["group_id"], "A")
+        self.assertEqual(report["removed_counts_by_reason"], {"exact_duplicate_pair": 1})
+        removed = report["removed_samples"][0]
+        self.assertEqual(removed["representative_id"], cleaned[0]["id"])
+        self.assertEqual(removed["id"], make_sample_id(pairs[1]))
+        groups = []
+        for group in report["shared_source_groups"]:
+            groups.append(group["group_ids"])
+        self.assertIn(["A", "B"], groups)
+        self.assertIn(["B", "C"], groups)
+
+    def test_same_source_different_summary_is_retained(self):
+        pairs = [self.make_pair(summary="one"), self.make_pair(summary="two", section=1)]
+        cleaned, report = clean_wikilingua_pairs(pairs)
+        self.assertEqual(len(cleaned), 2)
+        self.assertNotEqual(cleaned[0]["id"], cleaned[1]["id"])
+        self.assertEqual(report["removed_pair_count"], 0)
+
+    def test_requires_normalized_input(self):
+        with self.assertRaisesRegex(ValueError, "Normalize document"):
+            clean_wikilingua_pairs([self.make_pair(document="  source ")])
+
+    def test_empty_content_is_removed_after_normalization(self):
+        pairs = normalize_pairs([self.make_pair(document=" \t\n")])
+        cleaned, report = clean_wikilingua_pairs(pairs)
+        self.assertEqual(cleaned, [])
+        self.assertEqual(report["removed_counts_by_reason"], {"empty_document": 1})
+
+    def test_repeated_occurrence_has_one_retained_id(self):
+        pair = self.make_pair()
+        cleaned, report = clean_wikilingua_pairs([pair, pair.copy()])
+        self.assertEqual(len(cleaned), 1)
+        self.assertEqual(report["removed_pair_count"], 1)
+
+    def test_report_json_round_trip(self):
+        cleaned, report = clean_wikilingua_pairs([self.make_pair()])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifests" / "cleaning.json"
+            manifest = save_cleaning_manifest(report, path)
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), manifest)
+            self.assertEqual(manifest["dataset"]["id"], "esdurmus/wiki_lingua")
+        self.assertEqual(clean_wikilingua_pairs([])[0], [])
 
 
 if __name__ == "__main__":
