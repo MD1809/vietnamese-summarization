@@ -24,6 +24,7 @@ from src.tokenization import (
     create_data_loader,
     create_train_validation_loaders,
     validate_loader_epoch,
+    load_tokenization_source,
 )
 
 
@@ -627,6 +628,59 @@ class DataLoaderTests(unittest.TestCase):
                 create_data_loader(samples, tokenizer, 1, False, -1)
         with self.assertRaisesRegex(ValueError, "test remains locked"):
             create_train_validation_loaders({"train": samples, "validation": samples, "test": samples}, tokenizer)
+
+
+class CacheSettingsTests(unittest.TestCase):
+    def test_manifest_paths_are_read_from_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, config_path, rows = TruncationTests().prepare_files(directory)
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            for key in ["subset_manifest", "processed_manifest"]:
+                original_path = root / config["paths"][key]
+                relative_path = "custom-manifests/" + key + ".json"
+                changed_path = root / relative_path
+                changed_path.parent.mkdir(parents=True, exist_ok=True)
+                changed_path.write_bytes(original_path.read_bytes())
+                original_path.write_text("{}", encoding="utf-8")
+                config["paths"][key] = relative_path
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            loaded_config, loaded_rows, source_files, fingerprint = load_tokenization_source(root, config_path)
+            self.assertEqual(loaded_rows, rows)
+            self.assertEqual(loaded_config["paths"], config["paths"])
+
+    def test_missing_manifest_reference_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, config_path, rows = TruncationTests().prepare_files(directory)
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            del config["paths"]["subset_manifest"]
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "paths.subset_manifest"):
+                load_tokenization_source(root, config_path)
+
+    def test_cache_bypass_passes_updated_settings_to_map(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, config_path, rows = TruncationTests().prepare_files(directory)
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["max_source_length"] = 5
+            config["max_target_length"] = 4
+            config["task_prefix"] = "prefix "
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            raw = {}
+            for split_name in rows:
+                raw[split_name] = MappingDataset(rows[split_name])
+            module, tokenizer, auto = TokenizePairsTests().tokenizer_module()
+            modules = {"datasets": types.SimpleNamespace(load_dataset=Mock(return_value=raw)), "transformers": module}
+            with patch.dict(sys.modules, modules):
+                tokenize_train_validation(root, config_path, load_from_cache_file=False)
+            for split_name in raw:
+                options = raw[split_name].map_options
+                self.assertIs(options["load_from_cache_file"], False)
+                self.assertEqual(options["fn_kwargs"]["max_source_length"], 5)
+                self.assertEqual(options["fn_kwargs"]["max_target_length"], 4)
+                self.assertEqual(options["fn_kwargs"]["task_prefix"], "prefix ")
+                self.assertNotIn("new_fingerprint", options)
+                self.assertNotIn("cache_file_name", options)
+            self.assertTrue(tokenizer.call_args_list[0].kwargs["text"][0].startswith("prefix "))
 
 
 if __name__ == "__main__":

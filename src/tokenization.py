@@ -29,12 +29,17 @@ def load_tokenization_source(project_root, config_path="configs/train.json"):
     if not isinstance(config.get("task_prefix"), str):
         raise ValueError("Configuration must explicitly define task_prefix as a string")
     root = Path(project_root)
-    manifest_dir = root / "data" / "manifests"
+    manifest_paths = {}
+    for key in ["subset_manifest", "processed_manifest"]:
+        relative_path = config["paths"].get(key)
+        if not isinstance(relative_path, str) or relative_path.strip() == "":
+            raise ValueError(f"Configuration must define paths.{key}")
+        manifest_paths[key] = _prepared_file_path(root, relative_path)
     processed = json.loads(
-        (manifest_dir / "wikilingua_processed.json").read_text(encoding="utf-8")
+        manifest_paths["processed_manifest"].read_text(encoding="utf-8")
     )
     subset = json.loads(
-        (manifest_dir / "wikilingua_subsets.json").read_text(encoding="utf-8")
+        manifest_paths["subset_manifest"].read_text(encoding="utf-8")
     )
     if processed["dataset"] != config["dataset"] or subset["dataset"] != config["dataset"]:
         raise ValueError("Prepared dataset does not match configuration")

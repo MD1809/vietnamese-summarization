@@ -13,6 +13,8 @@
     "train_file": "data/processed/train.jsonl",
     "validation_file": "data/processed/validation.jsonl",
     "test_file": "data/processed/test.jsonl",
+    "subset_manifest": "data/manifests/wikilingua_subsets.json",
+    "processed_manifest": "data/manifests/wikilingua_processed.json",
     "output_dir": "outputs",
     "checkpoint_dir": "checkpoints"
   },
