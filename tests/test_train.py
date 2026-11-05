@@ -30,6 +30,12 @@ from src.train import (
     train_accumulated_group,
     validate_model,
     save_training_checkpoint,
+    capture_train_loader_state,
+    restore_train_loader_state,
+    save_last_checkpoint,
+    load_last_checkpoint,
+    train_checkpoint_test_epoch,
+    preview_train_epoch_ids,
 )
 
 
@@ -960,6 +966,133 @@ class AccumulationTests(unittest.TestCase):
         self.assertEqual(report["optimizer_steps"], 3)
         self.assertEqual(report["optimizer_state_step_values"], [3])
         self.assertTrue(report["partial_last_group_check_passed"])
+
+
+class EpochCheckpointTests(unittest.TestCase):
+    def loader(self):
+        generator = Mock()
+        generator.get_state.return_value = "saved-generator-state"
+        return types.SimpleNamespace(
+            generator=generator, num_workers=0, batch_size=1, drop_last=False,
+            sampler=types.SimpleNamespace(), dataset=[{"id": "a"}, {"id": "b"}],
+        )
+
+    def test_loader_identity_and_generator_are_restored_without_iteration(self):
+        loader = self.loader()
+        saved = capture_train_loader_state(loader)
+        loader.generator.get_state.return_value = "different-state"
+        torch_module = types.SimpleNamespace(equal=Mock(return_value=True))
+        with patch.dict(sys.modules, {"torch": torch_module}):
+            restore_train_loader_state(loader, saved)
+        loader.generator.set_state.assert_called_once_with("saved-generator-state")
+        torch_module.equal.assert_called_once_with("different-state", "saved-generator-state")
+
+    def test_changed_training_sample_order_is_rejected_before_setting_rng(self):
+        loader = self.loader()
+        saved = capture_train_loader_state(loader)
+        loader.dataset.reverse()
+        with patch.dict(sys.modules, {"torch": types.SimpleNamespace()}):
+            with self.assertRaisesRegex(ValueError, "sample_ids"):
+                restore_train_loader_state(loader, saved)
+        loader.generator.set_state.assert_not_called()
+
+    def test_failed_pending_write_preserves_existing_last(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            last = root / "last"
+            last.mkdir()
+            (last / "existing.txt").write_text("previous checkpoint", encoding="utf-8")
+            with patch.dict(sys.modules, {"torch": types.SimpleNamespace()}):
+                with patch("src.train.save_training_checkpoint", side_effect=OSError("write interrupted")):
+                    with self.assertRaisesRegex(OSError, "write interrupted"):
+                        save_last_checkpoint(Mock(), Mock(), Mock(), root, {"completed_epochs": 1, "global_step": 3}, self.loader())
+            self.assertEqual((last / "existing.txt").read_text(encoding="utf-8"), "previous checkpoint")
+
+    def test_complete_pending_replaces_last_and_cleans_only_backup(self):
+        loader = self.loader()
+        progress = {"completed_epochs": 2, "global_step": 6}
+        saved = {
+            "progress": progress,
+            "train_config": json.loads(Path("configs/train.json").read_text(encoding="utf-8")),
+            "train_loader_state": capture_train_loader_state(loader),
+        }
+
+        def write_pending(model, tokenizer, optimizer, target, progress, config_path, train_loader):
+            target.mkdir()
+            for name in ["config.json", "model.safetensors", "tokenizer_config.json", "spiece.model", "training_state.pt"]:
+                (target / name).write_bytes(b"checkpoint file")
+
+        torch_module = types.SimpleNamespace(load=Mock(return_value=saved), equal=Mock(return_value=True))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "last").mkdir()
+            (root / "last" / "old.txt").write_bytes(b"old")
+            (root / "unrelated.txt").write_bytes(b"keep")
+            with patch.dict(sys.modules, {"torch": torch_module}):
+                with patch("src.train.save_training_checkpoint", side_effect=write_pending):
+                    report = save_last_checkpoint(Mock(), Mock(), Mock(), root, progress, loader)
+            self.assertTrue((root / "last" / "training_state.pt").is_file())
+            self.assertFalse((root / "last_previous").exists())
+            self.assertFalse((root / "last_pending").exists())
+            self.assertEqual((root / "unrelated.txt").read_bytes(), b"keep")
+            self.assertEqual(report["saved_progress"], progress)
+
+    def test_loader_checkpoint_requires_loader_on_resume(self):
+        modules, saved, model, tokenizer, optimizer = CheckpointTests().examples()
+        saved["train_loader_state"] = {"example": "state"}
+        with patch.dict(sys.modules, modules):
+            with self.assertRaisesRegex(ValueError, "requires the training DataLoader"):
+                load_training_checkpoint("example/last")
+        modules["transformers"].AutoModelForSeq2SeqLM.from_pretrained.assert_not_called()
+
+    def test_resume_can_find_previous_checkpoint_after_interrupted_directory_swap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            previous = root / "last_previous"
+            previous.mkdir()
+            model = Mock()
+            result = (model, "tokenizer", "optimizer", {"completed_epochs": 1, "global_step": 3}, {})
+            with patch("src.train.load_training_checkpoint", return_value=result) as load:
+                restored = load_last_checkpoint(root, self.loader())
+            self.assertEqual(load.call_args.args[0], previous)
+            self.assertEqual(restored[-1]["next_epoch"], 2)
+            model.train.assert_called_once_with()
+
+    def test_preview_restores_loader_state_even_when_iteration_fails(self):
+        loader = Mock()
+        loader.__iter__ = Mock(side_effect=RuntimeError("iteration failed"))
+        with patch("src.train.capture_train_loader_state", return_value={"saved": "state"}):
+            with patch("src.train.restore_train_loader_state") as restore:
+                with self.assertRaisesRegex(RuntimeError, "iteration failed"):
+                    preview_train_epoch_ids(loader)
+        restore.assert_called_once_with(loader, {"saved": "state"})
+
+    def test_test_epoch_finishes_tail_and_advances_completed_epoch_and_global_step(self):
+        batches = SmallSampleTests().batches()
+        extra = copy.deepcopy(batches[0])
+        extra["sample_ids"] = ["sample-16"]
+        batches.append(extra)
+        loader = Mock()
+        loader.dataset = []
+        for batch in batches:
+            loader.dataset.append({"id": batch["sample_ids"][0]})
+        loader.__iter__ = Mock(return_value=iter(batches))
+        optimizer = types.SimpleNamespace(state={})
+        progress = {"completed_epochs": 1, "global_step": 3}
+        sizes = []
+
+        def train_group(model, group, optimizer, config_path):
+            sizes.append(len(group))
+            step = Mock()
+            step.item.return_value = 3 + len(sizes)
+            optimizer.state["example"] = {"step": step}
+
+        with patch("src.train.train_accumulated_group", side_effect=train_group):
+            restored_progress, report = train_checkpoint_test_epoch(Mock(), loader, optimizer, progress)
+        self.assertEqual(sizes, [8, 8, 1])
+        self.assertEqual(restored_progress, {"completed_epochs": 2, "global_step": 6})
+        self.assertEqual(progress, {"completed_epochs": 1, "global_step": 3})
+        self.assertEqual(report["optimizer_state_step_values"], [6])
 
 
 if __name__ == "__main__":

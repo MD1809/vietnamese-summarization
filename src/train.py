@@ -436,6 +436,7 @@ def restore_random_state(state):
 
 def save_training_checkpoint(
     model, tokenizer, optimizer, checkpoint_dir, progress, config_path="configs/train.json",
+    train_loader=None,
 ):
     from pathlib import Path
     import torch
@@ -451,15 +452,18 @@ def save_training_checkpoint(
     checkpoint_dir.mkdir(parents=True, exist_ok=False)
     model.save_pretrained(checkpoint_dir, safe_serialization=True)
     tokenizer.save_pretrained(checkpoint_dir)
-    torch.save({
+    state = {
         "train_config": config,
         "progress": dict(progress),
         "optimizer_state_dict": optimizer_state,
         "random_state": capture_random_state(),
-    }, checkpoint_dir / "training_state.pt")
+    }
+    if train_loader is not None:
+        state["train_loader_state"] = capture_train_loader_state(train_loader)
+    torch.save(state, checkpoint_dir / "training_state.pt")
 
 
-def load_training_checkpoint(checkpoint_dir, config_path="configs/train.json"):
+def load_training_checkpoint(checkpoint_dir, config_path="configs/train.json", train_loader=None):
     from pathlib import Path
     import torch
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
@@ -475,6 +479,10 @@ def load_training_checkpoint(checkpoint_dir, config_path="configs/train.json"):
     )
     if state["train_config"] != config:
         raise ValueError("Checkpoint configuration does not match current train configuration")
+    if state.get("train_loader_state") is not None and train_loader is None:
+        raise ValueError("Checkpoint requires the training DataLoader for epoch-boundary resume")
+    if train_loader is not None and state.get("train_loader_state") is None:
+        raise ValueError("Checkpoint does not contain training DataLoader state")
     tokenizer = AutoTokenizer.from_pretrained(
         checkpoint_dir, use_fast=False, local_files_only=True,
     )
@@ -501,6 +509,8 @@ def load_training_checkpoint(checkpoint_dir, config_path="configs/train.json"):
             tensor_count = tensor_count + 1
         step_values.add(int(restored_values["step"].item()))
     restore_random_state(state["random_state"])
+    if train_loader is not None:
+        restore_train_loader_state(train_loader, state["train_loader_state"])
     report = {
         "optimizer_state_check_passed": True,
         "optimizer_state_tensor_count_checked": tensor_count,
@@ -509,6 +519,7 @@ def load_training_checkpoint(checkpoint_dir, config_path="configs/train.json"):
         "random_state_check_passed": True,
         "restored_progress": dict(state["progress"]),
         "configuration_check_passed": True,
+        "train_loader_state_restored": train_loader is not None,
         "model_device": str(next(model.parameters()).device),
         "model_dtype": str(next(model.parameters()).dtype),
     }
@@ -1002,4 +1013,158 @@ def run_accumulation_check(model, batches, optimizer, config_path="configs/train
         "model_device": str(next(model.parameters()).device),
         "model_dtype": str(next(model.parameters()).dtype),
         "test_content_read": False,
+    }
+
+
+def capture_train_loader_state(train_loader):
+    if train_loader.generator is None or train_loader.num_workers != 0:
+        raise ValueError("Epoch resume requires a DataLoader generator and num_workers=0")
+    sample_ids = []
+    for sample in train_loader.dataset:
+        sample_ids.append(sample["id"])
+    if len(sample_ids) == 0 or len(set(sample_ids)) != len(sample_ids):
+        raise ValueError("Epoch resume requires distinct training sample IDs")
+    return {
+        "sample_ids": sample_ids,
+        "batch_size": train_loader.batch_size,
+        "drop_last": train_loader.drop_last,
+        "num_workers": train_loader.num_workers,
+        "sampler_class": type(train_loader.sampler).__name__,
+        "generator_state": train_loader.generator.get_state(),
+    }
+
+
+def restore_train_loader_state(train_loader, saved_state):
+    import torch
+
+    current = capture_train_loader_state(train_loader)
+    for key in ["sample_ids", "batch_size", "drop_last", "num_workers", "sampler_class"]:
+        if current[key] != saved_state[key]:
+            raise ValueError("Training DataLoader does not match checkpoint: " + key)
+    train_loader.generator.set_state(saved_state["generator_state"])
+    if not torch.equal(train_loader.generator.get_state(), saved_state["generator_state"]):
+        raise ValueError("Training DataLoader generator state was not restored")
+
+
+def preview_train_epoch_ids(train_loader):
+    saved_state = capture_train_loader_state(train_loader)
+    sample_ids = []
+    try:
+        for batch in train_loader:
+            sample_ids.extend(batch["sample_ids"])
+    finally:
+        restore_train_loader_state(train_loader, saved_state)
+    return sample_ids
+
+
+def save_last_checkpoint(
+    model, tokenizer, optimizer, checkpoint_run_dir, progress, train_loader,
+    config_path="configs/train.json",
+):
+    import shutil
+    from pathlib import Path
+    import torch
+
+    if progress.get("completed_epochs", 0) < 1:
+        raise ValueError("Last checkpoint must be saved after completing an epoch")
+    root = Path(checkpoint_run_dir).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    last = root / "last"
+    pending = root / "last_pending"
+    previous = root / "last_previous"
+    for path in [last, pending, previous]:
+        if path.is_symlink() or path.resolve().parent != root:
+            raise ValueError("Checkpoint path must stay inside the selected run directory")
+    if pending.exists() or previous.exists():
+        raise RuntimeError("Checkpoint staging remains from an interrupted save; inspect before retrying")
+    save_training_checkpoint(
+        model, tokenizer, optimizer, pending, progress, config_path, train_loader=train_loader,
+    )
+    for file_name in ["config.json", "model.safetensors", "tokenizer_config.json", "spiece.model", "training_state.pt"]:
+        path = pending / file_name
+        if not path.is_file() or path.stat().st_size == 0:
+            raise ValueError("Incomplete pending checkpoint: " + file_name)
+    state = torch.load(pending / "training_state.pt", map_location="cpu", weights_only=True)
+    if state["progress"] != progress or state["train_config"] != load_train_config(config_path):
+        raise ValueError("Pending checkpoint progress or configuration readback failed")
+    restore_state = capture_train_loader_state(train_loader)
+    if not torch.equal(state["train_loader_state"]["generator_state"], restore_state["generator_state"]):
+        raise ValueError("Pending DataLoader generator state readback failed")
+    del state
+    if last.exists():
+        last.rename(previous)
+    try:
+        pending.rename(last)
+    except OSError:
+        if previous.exists() and not last.exists():
+            previous.rename(last)
+        raise
+    if previous.exists():
+        if previous.is_symlink() or previous.resolve() != root / "last_previous":
+            raise ValueError("Cannot remove a checkpoint backup outside the selected run directory")
+        shutil.rmtree(previous)
+    return {
+        "checkpoint_dir": str(last),
+        "saved_progress": dict(progress),
+        "resume_boundary": "end_of_epoch",
+        "pending_readback_check_passed": True,
+        "train_loader_state_saved": True,
+    }
+
+
+def load_last_checkpoint(checkpoint_run_dir, train_loader, config_path="configs/train.json"):
+    from pathlib import Path
+
+    root = Path(checkpoint_run_dir).resolve()
+    checkpoint_dir = root / "last"
+    if not checkpoint_dir.is_dir() and (root / "last_previous").is_dir():
+        checkpoint_dir = root / "last_previous"
+    if checkpoint_dir.is_symlink() or checkpoint_dir.resolve().parent != root:
+        raise ValueError("Resume checkpoint must stay inside the selected run directory")
+    model, tokenizer, optimizer, progress, report = load_training_checkpoint(
+        checkpoint_dir, config_path, train_loader=train_loader,
+    )
+    if progress["completed_epochs"] < 1:
+        raise ValueError("Resume checkpoint must represent a completed epoch")
+    report["loaded_checkpoint_dir"] = str(checkpoint_dir)
+    report["resume_boundary"] = "end_of_epoch"
+    report["next_epoch"] = progress["completed_epochs"] + 1
+    model.train()
+    return model, tokenizer, optimizer, progress, report
+
+
+def train_checkpoint_test_epoch(model, train_loader, optimizer, progress, config_path="configs/train.json"):
+    config = load_train_config(config_path)
+    if len(train_loader.dataset) != 17:
+        raise ValueError("Checkpoint test epoch requires exactly 17 training samples")
+    batches = list(train_loader)
+    seen_ids = []
+    for batch in batches:
+        seen_ids.extend(batch["sample_ids"])
+    expected_ids = []
+    for sample in train_loader.dataset:
+        expected_ids.append(sample["id"])
+    if len(seen_ids) != 17 or set(seen_ids) != set(expected_ids):
+        raise ValueError("Checkpoint test epoch omitted or repeated training samples")
+    updated_progress = dict(progress)
+    group_sizes = []
+    size = config["gradient_accumulation_steps"]
+    for start in range(0, len(batches), size):
+        group = batches[start:start + size]
+        train_accumulated_group(model, group, optimizer, config_path)
+        updated_progress["global_step"] = updated_progress["global_step"] + 1
+        group_sizes.append(len(group))
+    updated_progress["completed_epochs"] = updated_progress["completed_epochs"] + 1
+    optimizer_steps = set()
+    for state in optimizer.state.values():
+        optimizer_steps.add(int(state["step"].item()))
+    if optimizer_steps != {updated_progress["global_step"]}:
+        raise ValueError("Optimizer steps do not match checkpoint test progress")
+    return updated_progress, {
+        "sample_ids": seen_ids,
+        "sample_count": len(seen_ids),
+        "group_sizes": group_sizes,
+        "optimizer_state_step_values": sorted(optimizer_steps),
+        "progress": dict(updated_progress),
+        "finite_gradients_and_updates_check_passed": True,
     }
