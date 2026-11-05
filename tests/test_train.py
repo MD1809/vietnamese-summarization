@@ -16,6 +16,7 @@ from src.train import (
     load_vit5_model,
     measure_small_sample_loss,
     run_small_sample_check,
+    validate_model,
 )
 
 
@@ -405,6 +406,95 @@ class SmallSampleTests(unittest.TestCase):
                     run_small_sample_check(Mock(), batches, Mock())
         measure.assert_not_called()
         step.assert_not_called()
+
+
+class ValidationTests(unittest.TestCase):
+    def examples(self):
+        state, torch_module, model, batch = ForwardTests().examples()
+        weight = TensorExample([[1.0, 2.0]])
+        weight.device = "cuda:0"
+        weight.dtype = "torch.float32"
+        weight.detach = Mock(return_value=weight)
+        weight.cpu = Mock(return_value=weight)
+        model.parameters = Mock(side_effect=self.parameters_for(weight))
+        model.named_parameters = Mock(return_value=[("weight", weight)])
+
+        def train():
+            model.training = True
+
+        def equal(left, right):
+            return left.tolist() == right.tolist()
+
+        model.train = Mock(side_effect=train)
+        torch_module.equal = equal
+        return torch_module, model, batch, weight
+
+    def parameters_for(self, weight):
+        def parameters():
+            return iter([weight])
+        return parameters
+
+    def test_real_forward_path_uses_eval_no_grad_and_preserves_weights(self):
+        torch_module, model, batch, weight = self.examples()
+        with patch.dict(sys.modules, {"torch": torch_module}):
+            report = validate_model(model, [batch], ["sample-a"])
+        self.assertEqual(report["validation_loss"], 2.5)
+        self.assertEqual(report["valid_target_token_count"], 3)
+        self.assertEqual(report["parameter_tensor_count_checked"], 1)
+        self.assertTrue(report["weights_unchanged_check_passed"])
+        self.assertTrue(report["model_training_after_validation"])
+        self.assertFalse(report["backward_run"])
+        self.assertFalse(report["optimizer_step_run"])
+        model.train.assert_called_once_with()
+        weight.cpu.assert_called()
+
+    def test_aggregation_uses_token_counts_instead_of_batch_count(self):
+        torch_module, model, batch, weight = self.examples()
+        reports = [
+            {"loss": 2.0, "valid_target_token_count": 1, "sample_ids": ["a"]},
+            {"loss": 4.0, "valid_target_token_count": 3, "sample_ids": ["b"]},
+        ]
+        with patch.dict(sys.modules, {"torch": torch_module}):
+            with patch("src.train.check_forward_batch", side_effect=reports):
+                report = validate_model(model, [batch, batch], ["a", "b"])
+        self.assertEqual(report["validation_loss"], 3.5)
+        self.assertEqual(report["weighted_loss_sum"], 14.0)
+        self.assertEqual(report["valid_target_token_count"], 4)
+        self.assertEqual(report["sample_count"], 2)
+        self.assertEqual(report["batch_count"], 2)
+
+    def test_missing_repeated_or_reordered_samples_are_rejected(self):
+        for expected in [["sample-a", "missing"], ["other"]]:
+            torch_module, model, batch, weight = self.examples()
+            with patch.dict(sys.modules, {"torch": torch_module}):
+                with self.assertRaisesRegex(ValueError, "IDs or order"):
+                    validate_model(model, [batch], expected)
+            self.assertTrue(model.training)
+        torch_module, model, batch, weight = self.examples()
+        with patch.dict(sys.modules, {"torch": torch_module}):
+            with self.assertRaisesRegex(ValueError, "IDs or order"):
+                validate_model(model, [batch, batch], ["sample-a"])
+
+    def test_changed_weight_is_detected_and_train_mode_is_restored(self):
+        torch_module, model, batch, weight = self.examples()
+
+        def changed_forward(model, batch):
+            weight.values[0][0] = 3.0
+            return {"loss": 2.5, "valid_target_token_count": 3, "sample_ids": ["sample-a"]}
+
+        with patch.dict(sys.modules, {"torch": torch_module}):
+            with patch("src.train.check_forward_batch", side_effect=changed_forward):
+                with self.assertRaisesRegex(ValueError, "changed model weights"):
+                    validate_model(model, [batch], ["sample-a"])
+        self.assertTrue(model.training)
+
+    def test_nan_loss_restores_train_mode_and_stops(self):
+        torch_module, model, batch, weight = self.examples()
+        model.output.loss.values = float("nan")
+        with patch.dict(sys.modules, {"torch": torch_module}):
+            with self.assertRaisesRegex(ValueError, "NaN or Inf"):
+                validate_model(model, [batch], ["sample-a"])
+        self.assertTrue(model.training)
 
 
 if __name__ == "__main__":

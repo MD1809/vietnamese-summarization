@@ -325,3 +325,62 @@ def run_small_sample_check(model, batches, optimizer):
         "validation_used": False,
         "test_content_read": False,
     }
+
+
+def validate_model(model, validation_loader, expected_sample_ids):
+    import torch
+
+    expected_sample_ids = list(expected_sample_ids)
+    if len(expected_sample_ids) == 0:
+        raise ValueError("Validation requires a nonempty set of samples")
+    if len(set(expected_sample_ids)) != len(expected_sample_ids):
+        raise ValueError("Expected validation sample IDs must be unique")
+
+    parameters_before = {}
+    for name, parameter in model.named_parameters():
+        parameters_before[name] = parameter.detach().cpu().clone()
+
+    total_loss = 0.0
+    total_tokens = 0
+    batch_count = 0
+    seen_ids = []
+    model.eval()
+    try:
+        for batch in validation_loader:
+            report = check_forward_batch(model, batch)
+            token_count = report["valid_target_token_count"]
+            total_loss = total_loss + report["loss"] * token_count
+            total_tokens = total_tokens + token_count
+            batch_count = batch_count + 1
+            seen_ids.extend(report["sample_ids"])
+            if batch_count % 50 == 0:
+                print("Validation đã xử lý số batch:", batch_count, flush=True)
+
+        if seen_ids != expected_sample_ids:
+            raise ValueError("Validation sample IDs or order do not match the expected split")
+        if total_tokens == 0:
+            raise ValueError("Validation requires valid target tokens")
+        for name, parameter in model.named_parameters():
+            if not torch.equal(parameters_before[name], parameter.detach().cpu()):
+                raise ValueError("Validation changed model weights: " + name)
+    finally:
+        model.train()
+
+    return {
+        "validation_loss": total_loss / total_tokens,
+        "weighted_loss_sum": total_loss,
+        "valid_target_token_count": total_tokens,
+        "sample_count": len(seen_ids),
+        "batch_count": batch_count,
+        "sample_ids": seen_ids,
+        "measurement_mode": "eval with no_grad",
+        "complete_validation_in_order_check_passed": True,
+        "finite_logits_and_loss_check_passed": True,
+        "no_gradient_graph_check_passed": True,
+        "weights_unchanged_check_passed": True,
+        "parameter_tensor_count_checked": len(parameters_before),
+        "model_training_after_validation": model.training,
+        "backward_run": False,
+        "optimizer_step_run": False,
+        "test_content_read": False,
+    }
