@@ -21,22 +21,7 @@ def load_summarizer(checkpoint_run_dir, config_path="configs/train.json"):
     return load_best_checkpoint(checkpoint_run_dir, config_path)
 
 
-def summarize_text(
-    text,
-    model,
-    tokenizer,
-    config_path="configs/train.json",
-    generation_config_path="configs/generation.json",
-):
-    import time
-    import torch
-
-    config = load_train_config(config_path)
-    generation = load_generation_config(generation_config_path)
-    device = next(model.parameters()).device
-    if device.type == "cuda":
-        torch.cuda.synchronize(device)
-    started_at = time.perf_counter()
+def prepare_source(text, tokenizer, config, return_tensors=None):
     normalized = normalize_text(text)
     if normalized == "":
         raise ValueError("Lỗi: Văn bản đầu vào rỗng hoặc chỉ có khoảng trắng.")
@@ -55,9 +40,40 @@ def summarize_text(
         max_length=config["max_source_length"],
         truncation=True,
         padding=False,
-        return_tensors="pt",
+        return_tensors=return_tensors,
     )
-    used_ids = encoded["input_ids"].tolist()[0]
+    if return_tensors == "pt":
+        used_ids = encoded["input_ids"].tolist()[0]
+    else:
+        used_ids = encoded["input_ids"]
+    source_info = {
+        "normalized_text": normalized,
+        "input_token_count": len(full_encoding["input_ids"]),
+        "used_input_token_count": len(used_ids),
+        "was_truncated": len(full_encoding["input_ids"]) > len(used_ids),
+        "max_source_length": config["max_source_length"],
+        "used_input_ids": used_ids,
+    }
+    return encoded, source_info
+
+
+def summarize_text(
+    text,
+    model,
+    tokenizer,
+    config_path="configs/train.json",
+    generation_config_path="configs/generation.json",
+):
+    import time
+    import torch
+
+    config = load_train_config(config_path)
+    generation = load_generation_config(generation_config_path)
+    device = next(model.parameters()).device
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    started_at = time.perf_counter()
+    encoded, source_info = prepare_source(text, tokenizer, config, "pt")
     model.eval()
     with torch.no_grad():
         generated = model.generate(
@@ -72,17 +88,13 @@ def summarize_text(
     generated_ids = generated.tolist()[0]
     summary = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
     elapsed = time.perf_counter() - started_at
-    return {
+    result = {
         "summary": summary,
-        "normalized_text": normalized,
-        "input_token_count": len(full_encoding["input_ids"]),
-        "used_input_token_count": len(used_ids),
-        "was_truncated": len(full_encoding["input_ids"]) > len(used_ids),
-        "max_source_length": config["max_source_length"],
-        "used_input_ids": used_ids,
         "generated_ids": generated_ids,
         "generation_config": generation,
         "model_device": str(device),
         "elapsed_seconds": elapsed,
         "timing_scope": "normalization, tokenization, generation and decode; excludes model loading",
     }
+    result.update(source_info)
+    return result
