@@ -1,0 +1,58 @@
+{
+  "run_id": "vit5_finetuning_20261106_161925_175323",
+  "run_status": "completed",
+  "completed_epochs": 3,
+  "global_step": 750,
+  "history": [
+    {
+      "epoch": 1,
+      "global_step": 250,
+      "train_loss": 2.398827569979262,
+      "validation_loss": 2.1155689896441245,
+      "train_sample_count": 2000,
+      "validation_sample_count": 201,
+      "train_valid_target_tokens": 109290,
+      "validation_valid_target_tokens": 11151,
+      "learning_rate": 5e-05,
+      "train_seconds": 439.69439061699995,
+      "validation_seconds": 16.923342367999794,
+      "epoch_compute_seconds": 456.61773298499975
+    },
+    {
+      "epoch": 2,
+      "global_step": 500,
+      "train_loss": 1.8889004596460552,
+      "validation_loss": 2.110764804105354,
+      "train_sample_count": 2000,
+      "validation_sample_count": 201,
+      "train_valid_target_tokens": 109290,
+      "validation_valid_target_tokens": 11151,
+      "learning_rate": 5e-05,
+      "train_seconds": 464.7077621220001,
+      "validation_seconds": 16.834919507999984,
+      "epoch_compute_seconds": 481.54268163000006
+    },
+    {
+      "epoch": 3,
+      "global_step": 750,
+      "train_loss": 1.565507766017594,
+      "validation_loss": 2.2124260731817156,
+      "train_sample_count": 2000,
+      "validation_sample_count": 201,
+      "train_valid_target_tokens": 109290,
+      "validation_valid_target_tokens": 11151,
+      "learning_rate": 5e-05,
+      "train_seconds": 464.25026542299975,
+      "validation_seconds": 16.54142111400006,
+      "epoch_compute_seconds": 480.7916865369998
+    }
+  ],
+  "best_epoch": 2,
+  "best_global_step": 500,
+  "best_validation_loss": 2.110764804105354,
+  "checkpoint_dir": "/content/drive/MyDrive/vietnamese-summarization/checkpoints/vit5_finetuning_20261106_161925_175323",
+  "history_file": "/content/drive/MyDrive/vietnamese-summarization/outputs/vit5_finetuning_20261106_161925_175323/training_history.csv",
+  "current_invocation_seconds": 1519.4181272350002,
+  "resume_boundary": "end_of_epoch",
+  "test_content_read": false
+}
