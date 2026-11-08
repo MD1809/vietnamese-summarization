@@ -1,0 +1,204 @@
+{
+  "library": "rouge-score",
+  "library_version": "0.1.2",
+  "settings": {
+    "rouge_types": [
+      "rouge1",
+      "rouge2",
+      "rougeL"
+    ],
+    "unicode_normalization": "NFC",
+    "lowercase": true,
+    "non_letter_number_handling": "replace with spaces",
+    "token_unit": "whitespace-separated Unicode letters and numbers",
+    "use_stemmer": false,
+    "rouge_l_variant": "rougeL",
+    "aggregation": "mean of per-sample F1; multiply by 100 for percentage scores",
+    "empty_token_sequence_score": 0.0
+  },
+  "test_summary": {
+    "tests_run": 12,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "all_checks_passed": true
+  },
+  "tokenization_examples": {
+    "vietnamese": [
+      "tiếng",
+      "việt",
+      "học",
+      "sâu",
+      "2026",
+      "đúng"
+    ],
+    "composed": [
+      "tôi",
+      "học"
+    ],
+    "decomposed": [
+      "tôi",
+      "học"
+    ],
+    "no_stemming": [
+      "running",
+      "runs"
+    ]
+  },
+  "hand_calculated_example": {
+    "reference": "em thích học sâu",
+    "prediction": "em học sâu",
+    "scores": {
+      "rouge1": {
+        "precision": 1.0,
+        "recall": 0.75,
+        "f1": 0.8571428571428571
+      },
+      "rouge2": {
+        "precision": 0.5,
+        "recall": 0.3333333333333333,
+        "f1": 0.4
+      },
+      "rougeL": {
+        "precision": 1.0,
+        "recall": 0.75,
+        "f1": 0.8571428571428571
+      }
+    }
+  },
+  "identical_text": {
+    "rouge1": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "rouge2": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "rougeL": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    }
+  },
+  "empty_text": {
+    "rouge1": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    },
+    "rouge2": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    },
+    "rougeL": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    }
+  },
+  "no_overlap": {
+    "rouge1": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    },
+    "rouge2": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    },
+    "rougeL": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    }
+  },
+  "single_token": {
+    "rouge1": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "rouge2": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    },
+    "rougeL": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    }
+  },
+  "mean_f1_example": {
+    "sample_count": 2,
+    "per_sample": [
+      {
+        "rouge1": {
+          "precision": 1.0,
+          "recall": 0.25,
+          "f1": 0.4
+        },
+        "rouge2": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "rougeL": {
+          "precision": 1.0,
+          "recall": 0.25,
+          "f1": 0.4
+        }
+      },
+      {
+        "rouge1": {
+          "precision": 0.25,
+          "recall": 1.0,
+          "f1": 0.4
+        },
+        "rouge2": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0
+        },
+        "rougeL": {
+          "precision": 0.25,
+          "recall": 1.0,
+          "f1": 0.4
+        }
+      }
+    ],
+    "mean_f1": {
+      "rouge1": 0.4,
+      "rouge2": 0.0,
+      "rougeL": 0.4
+    },
+    "mean_f1_percent": {
+      "rouge1": 40.0,
+      "rouge2": 0.0,
+      "rougeL": 40.0
+    },
+    "settings": {
+      "rouge_types": [
+        "rouge1",
+        "rouge2",
+        "rougeL"
+      ],
+      "unicode_normalization": "NFC",
+      "lowercase": true,
+      "non_letter_number_handling": "replace with spaces",
+      "token_unit": "whitespace-separated Unicode letters and numbers",
+      "use_stemmer": false,
+      "rouge_l_variant": "rougeL",
+      "aggregation": "mean of per-sample F1; multiply by 100 for percentage scores",
+      "empty_token_sequence_score": 0.0
+    }
+  },
+  "input_origin": "handwritten examples",
+  "validation_content_read": false,
+  "test_content_read": false
+}
