@@ -46,7 +46,7 @@ class InferenceTests(unittest.TestCase):
         kwargs = model.generate.call_args.kwargs
         self.assertNotIn("labels", kwargs)
         self.assertIs(kwargs["do_sample"], False)
-        self.assertEqual(kwargs["num_beams"], 1)
+        self.assertEqual(kwargs["num_beams"], 4)
         self.assertEqual(kwargs["max_new_tokens"], 128)
         model.eval.assert_called_once_with()
         context.__enter__.assert_called_once()

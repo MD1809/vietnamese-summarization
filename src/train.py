@@ -532,8 +532,7 @@ def generate_checkpoint_probe(model, tokenizer, source_text, config_path="config
 
     config = load_train_config(config_path)
     generation_config = load_generation_config()
-    if generation_config["do_sample"] or generation_config["num_beams"] != 1:
-        raise ValueError("G4.5 expects greedy decoding without sampling")
+    generation_config["num_beams"] = 1
     encoded = tokenizer(
         config["task_prefix"] + source_text,
         return_tensors="pt",

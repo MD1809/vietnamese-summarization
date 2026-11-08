@@ -652,6 +652,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(report["generated_text"], "summary")
         self.assertIs(model.generate.call_args.kwargs["do_sample"], False)
         self.assertEqual(model.generate.call_args.kwargs["num_beams"], 1)
+        self.assertEqual(report["generation_config"]["num_beams"], 1)
 
     def test_random_state_restores_python_numpy_cpu_and_cuda(self):
         import random

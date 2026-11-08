@@ -1,0 +1,18 @@
+{
+  "comparison_id": "decoding_comparison_20261108_175213_059002",
+  "checkpoint_run_id": "vit5_finetuning_20261106_161925_175323",
+  "approved_on": "2026-11-09",
+  "decision": "approved_by_user",
+  "selection_rule": "highest mean ROUGE-L F1; exact tie selects greedy",
+  "selected_method": "beam",
+  "selected_generation_config": {
+    "num_beams": 4,
+    "max_new_tokens": 128,
+    "do_sample": false
+  },
+  "validation_rouge_l_f1_percent": 21.349079982077168,
+  "generation_config_path": "configs/generation.json",
+  "generation_config_updated": true,
+  "original_comparison_report_preserved": true,
+  "test_content_read": false
+}

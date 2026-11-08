@@ -1,0 +1,197 @@
+[
+  {
+    "id": "vi_0247f2933f242fed13763b11d7c0374011457c56addec08b7df3a279b33e7af9",
+    "document": "Game Minecraft cho phép bạn dễ dàng bắt đầu chơi game Multiplayer nếu mọi người chơi đều kết nối vào cùng mạng nội bộ. Nếu bạn đang ở nhà, có khả năng là tất cả các máy tính đều đã được kết nối vào cùng một mạng nội bộ. Mọi việc có thể sẽ trở nên phức tạp hơn đôi chút trong môi trường làm việc hoặc trường học. Nhấp vào đây để biết cách thiết lập mạng nội bộ. Bạn có thể sử dụng mạng riêng ảo (VPN) để kết nối nhiều máy tính ở xa nhau vào cùng một mạng. Cách này có thể được áp dụng để tụ hội bạn bè từ nhiều địa điểm khác nhau mà không cần phải tạo ra một máy chủ (server). Bạn có thể tự tìm hiểu cách thiết lập mạng riêng ảo dành cho bạn và những người bạn. Để kết nối với game, mọi người đều phải chơi phiên bản game Minecraft giống nhau. Quyết định xem máy tính nào sẽ bắt đầu game, sau đó sử dụng trình chỉnh sửa hồ sơ (profile editor) trên tất cả các máy tính để thiết lập phiên bản sao cho khớp nhau. Khởi chạy Minecraft Launcher và nhấp vào nút Edit Profile. Lựa chọn đúng phiên bản từ trình đơn thả xuống \"Use version\". Máy tính này được coi là \"host\", thường thì sẽ là máy tính có cấu hình mạnh nhất. Tải (load) một trong những thế giới của bạn trong chế độ Single Player trên máy host. Sau khi thế giới đã được tải, bạn có quyền mở game cho bất cứ ai trong mạng nội bộ của mình thông qua trình đơn Pause. Thao tác này giúp bắt đầu quá trình thiết lập mạng và một trình đơn mới sẽ xuất hiện. Bạn được phép lựa chọn trong số các chế độ chơi game sinh tồn (Survival), phiêu lưu (Adventure), và sáng tạo (Creative), cũng như bật hoặc tắt mã ăn gian (cheat code). Nhấp vào các nút để chuyển đổi giữa các tùy chọn. Các máy tính khác trong mạng cục bộ của bạn giờ sẽ có thể kết nối vào ván chơi này. Đảm bảo rằng máy tính đã được kết nối vào mạng và đang chạy cùng phiên bản Minecraft mà máy tính host đang chạy. Minecraft sẽ quét mạng của bạn xem có ván chơi nào đang diễn ra hay không. Ván chơi Minecraft của máy tính host thường sẽ xuất hiện trong danh sách. Nếu không nhìn thấy ván chơi nào, nhấp nút Direct Connect và gõ địa chỉ IP nội bộ của máy tính host. Nhấp vào đây để biết thông tin cụ thể về việc tìm địa chỉ IP của máy tính host. Màn hình của bạn sẽ hiển thị LAN World tại phía trên tên của ván chơi. Sau khi lựa chọn và gia nhập, thế giới sẽ được tải và bạn có thể bắt đầu chơi. Sau khi mọi người đã tham gia, họ có thể nhận ra rằng mình đang ở xa người host, nhất là khi người này đã khám phá nhiều địa điểm trong game. Người host có thể dịch chuyển tức thời từng người chơi để mọi người có thể chơi game cùng nhau. Trên máy tính host, nhấn T để mở khung chat, sau đó gõ /tp TênNgườiChơi TênHost và nhấn Enter. Bước này giúp dịch chuyển tức thời người chơi có tên là TênNgườiChơi đến gần người host. Lặp lại bước này cho những người chơi khác. Đảm bảo rằng mỗi người chơi đều nghỉ ngơi trên một chiếc giường ngủ tại địa điểm mới của bạn. Điều này đảm bảo rằng họ sẽ xuất hiện ở đó nếu bị chết.",
+    "reference": "Đảm bảo rằng tất cả máy tính đều được kết nối vào cùng một mạng nội bộ. Đảm bảo rằng tất cả người chơi đều đang chạy cùng một phiên bản Minecraft. Bắt đầu game trên một trong các máy tính. Nhấn phím Escape để mở trình đơn Pause. Nhấp Open to LAN. Tùy chỉnh thiết lập cho ván chơi multiplayer. Nhấp Start LAN World để bắt đầu một ván chơi multiplayer. Mở game Minecraft trên máy tính thứ hai. Nhấp nút Multiplayer trong trình đơn chính của game Minecraft. Lựa chọn ván chơi và nhấp Join Server. Yêu cầu người host dịch chuyển tức thời tất cả người chơi lại với nhau.",
+    "greedy": {
+      "id": "vi_0247f2933f242fed13763b11d7c0374011457c56addec08b7df3a279b33e7af9",
+      "group_id": "https://www.wikihow.vn/Ch%C6%A1i-Minecraft-Multiplayer",
+      "document": "Game Minecraft cho phép bạn dễ dàng bắt đầu chơi game Multiplayer nếu mọi người chơi đều kết nối vào cùng mạng nội bộ. Nếu bạn đang ở nhà, có khả năng là tất cả các máy tính đều đã được kết nối vào cùng một mạng nội bộ. Mọi việc có thể sẽ trở nên phức tạp hơn đôi chút trong môi trường làm việc hoặc trường học. Nhấp vào đây để biết cách thiết lập mạng nội bộ. Bạn có thể sử dụng mạng riêng ảo (VPN) để kết nối nhiều máy tính ở xa nhau vào cùng một mạng. Cách này có thể được áp dụng để tụ hội bạn bè từ nhiều địa điểm khác nhau mà không cần phải tạo ra một máy chủ (server). Bạn có thể tự tìm hiểu cách thiết lập mạng riêng ảo dành cho bạn và những người bạn. Để kết nối với game, mọi người đều phải chơi phiên bản game Minecraft giống nhau. Quyết định xem máy tính nào sẽ bắt đầu game, sau đó sử dụng trình chỉnh sửa hồ sơ (profile editor) trên tất cả các máy tính để thiết lập phiên bản sao cho khớp nhau. Khởi chạy Minecraft Launcher và nhấp vào nút Edit Profile. Lựa chọn đúng phiên bản từ trình đơn thả xuống \"Use version\". Máy tính này được coi là \"host\", thường thì sẽ là máy tính có cấu hình mạnh nhất. Tải (load) một trong những thế giới của bạn trong chế độ Single Player trên máy host. Sau khi thế giới đã được tải, bạn có quyền mở game cho bất cứ ai trong mạng nội bộ của mình thông qua trình đơn Pause. Thao tác này giúp bắt đầu quá trình thiết lập mạng và một trình đơn mới sẽ xuất hiện. Bạn được phép lựa chọn trong số các chế độ chơi game sinh tồn (Survival), phiêu lưu (Adventure), và sáng tạo (Creative), cũng như bật hoặc tắt mã ăn gian (cheat code). Nhấp vào các nút để chuyển đổi giữa các tùy chọn. Các máy tính khác trong mạng cục bộ của bạn giờ sẽ có thể kết nối vào ván chơi này. Đảm bảo rằng máy tính đã được kết nối vào mạng và đang chạy cùng phiên bản Minecraft mà máy tính host đang chạy. Minecraft sẽ quét mạng của bạn xem có ván chơi nào đang diễn ra hay không. Ván chơi Minecraft của máy tính host thường sẽ xuất hiện trong danh sách. Nếu không nhìn thấy ván chơi nào, nhấp nút Direct Connect và gõ địa chỉ IP nội bộ của máy tính host. Nhấp vào đây để biết thông tin cụ thể về việc tìm địa chỉ IP của máy tính host. Màn hình của bạn sẽ hiển thị LAN World tại phía trên tên của ván chơi. Sau khi lựa chọn và gia nhập, thế giới sẽ được tải và bạn có thể bắt đầu chơi. Sau khi mọi người đã tham gia, họ có thể nhận ra rằng mình đang ở xa người host, nhất là khi người này đã khám phá nhiều địa điểm trong game. Người host có thể dịch chuyển tức thời từng người chơi để mọi người có thể chơi game cùng nhau. Trên máy tính host, nhấn T để mở khung chat, sau đó gõ /tp TênNgườiChơi TênHost và nhấn Enter. Bước này giúp dịch chuyển tức thời người chơi có tên là TênNgườiChơi đến gần người host. Lặp lại bước này cho những người chơi khác. Đảm bảo rằng mỗi người chơi đều nghỉ ngơi trên một chiếc giường ngủ tại địa điểm mới của bạn. Điều này đảm bảo rằng họ sẽ xuất hiện ở đó nếu bị chết.",
+      "reference": "Đảm bảo rằng tất cả máy tính đều được kết nối vào cùng một mạng nội bộ. Đảm bảo rằng tất cả người chơi đều đang chạy cùng một phiên bản Minecraft. Bắt đầu game trên một trong các máy tính. Nhấn phím Escape để mở trình đơn Pause. Nhấp Open to LAN. Tùy chỉnh thiết lập cho ván chơi multiplayer. Nhấp Start LAN World để bắt đầu một ván chơi multiplayer. Mở game Minecraft trên máy tính thứ hai. Nhấp nút Multiplayer trong trình đơn chính của game Minecraft. Lựa chọn ván chơi và nhấp Join Server. Yêu cầu người host dịch chuyển tức thời tất cả người chơi lại với nhau.",
+      "prediction": "Mở Minecraft. Thiết lập mạng nội bộ. Thiết lập mạng nội bộ. Thiết lập mạng nội bộ. Thiết lập mạng nội bộ.",
+      "input_token_count": 739,
+      "used_input_token_count": 739,
+      "was_truncated": false,
+      "source_ids_sha256": "a98ba2cde97ed3d2ef08d6cbf63e5aec2faab64d2373c106d88030b4b9422c33",
+      "generated_token_count": 29,
+      "elapsed_seconds": 0.7032909049999034,
+      "scores": {
+        "rouge1": {
+          "precision": 0.3181818181818182,
+          "recall": 0.061946902654867256,
+          "f1": 0.1037037037037037
+        },
+        "rouge2": {
+          "precision": 0.14285714285714285,
+          "recall": 0.026785714285714284,
+          "f1": 0.045112781954887216
+        },
+        "rougeL": {
+          "precision": 0.22727272727272727,
+          "recall": 0.04424778761061947,
+          "f1": 0.07407407407407408
+        }
+      }
+    },
+    "beam": {
+      "id": "vi_0247f2933f242fed13763b11d7c0374011457c56addec08b7df3a279b33e7af9",
+      "group_id": "https://www.wikihow.vn/Ch%C6%A1i-Minecraft-Multiplayer",
+      "document": "Game Minecraft cho phép bạn dễ dàng bắt đầu chơi game Multiplayer nếu mọi người chơi đều kết nối vào cùng mạng nội bộ. Nếu bạn đang ở nhà, có khả năng là tất cả các máy tính đều đã được kết nối vào cùng một mạng nội bộ. Mọi việc có thể sẽ trở nên phức tạp hơn đôi chút trong môi trường làm việc hoặc trường học. Nhấp vào đây để biết cách thiết lập mạng nội bộ. Bạn có thể sử dụng mạng riêng ảo (VPN) để kết nối nhiều máy tính ở xa nhau vào cùng một mạng. Cách này có thể được áp dụng để tụ hội bạn bè từ nhiều địa điểm khác nhau mà không cần phải tạo ra một máy chủ (server). Bạn có thể tự tìm hiểu cách thiết lập mạng riêng ảo dành cho bạn và những người bạn. Để kết nối với game, mọi người đều phải chơi phiên bản game Minecraft giống nhau. Quyết định xem máy tính nào sẽ bắt đầu game, sau đó sử dụng trình chỉnh sửa hồ sơ (profile editor) trên tất cả các máy tính để thiết lập phiên bản sao cho khớp nhau. Khởi chạy Minecraft Launcher và nhấp vào nút Edit Profile. Lựa chọn đúng phiên bản từ trình đơn thả xuống \"Use version\". Máy tính này được coi là \"host\", thường thì sẽ là máy tính có cấu hình mạnh nhất. Tải (load) một trong những thế giới của bạn trong chế độ Single Player trên máy host. Sau khi thế giới đã được tải, bạn có quyền mở game cho bất cứ ai trong mạng nội bộ của mình thông qua trình đơn Pause. Thao tác này giúp bắt đầu quá trình thiết lập mạng và một trình đơn mới sẽ xuất hiện. Bạn được phép lựa chọn trong số các chế độ chơi game sinh tồn (Survival), phiêu lưu (Adventure), và sáng tạo (Creative), cũng như bật hoặc tắt mã ăn gian (cheat code). Nhấp vào các nút để chuyển đổi giữa các tùy chọn. Các máy tính khác trong mạng cục bộ của bạn giờ sẽ có thể kết nối vào ván chơi này. Đảm bảo rằng máy tính đã được kết nối vào mạng và đang chạy cùng phiên bản Minecraft mà máy tính host đang chạy. Minecraft sẽ quét mạng của bạn xem có ván chơi nào đang diễn ra hay không. Ván chơi Minecraft của máy tính host thường sẽ xuất hiện trong danh sách. Nếu không nhìn thấy ván chơi nào, nhấp nút Direct Connect và gõ địa chỉ IP nội bộ của máy tính host. Nhấp vào đây để biết thông tin cụ thể về việc tìm địa chỉ IP của máy tính host. Màn hình của bạn sẽ hiển thị LAN World tại phía trên tên của ván chơi. Sau khi lựa chọn và gia nhập, thế giới sẽ được tải và bạn có thể bắt đầu chơi. Sau khi mọi người đã tham gia, họ có thể nhận ra rằng mình đang ở xa người host, nhất là khi người này đã khám phá nhiều địa điểm trong game. Người host có thể dịch chuyển tức thời từng người chơi để mọi người có thể chơi game cùng nhau. Trên máy tính host, nhấn T để mở khung chat, sau đó gõ /tp TênNgườiChơi TênHost và nhấn Enter. Bước này giúp dịch chuyển tức thời người chơi có tên là TênNgườiChơi đến gần người host. Lặp lại bước này cho những người chơi khác. Đảm bảo rằng mỗi người chơi đều nghỉ ngơi trên một chiếc giường ngủ tại địa điểm mới của bạn. Điều này đảm bảo rằng họ sẽ xuất hiện ở đó nếu bị chết.",
+      "reference": "Đảm bảo rằng tất cả máy tính đều được kết nối vào cùng một mạng nội bộ. Đảm bảo rằng tất cả người chơi đều đang chạy cùng một phiên bản Minecraft. Bắt đầu game trên một trong các máy tính. Nhấn phím Escape để mở trình đơn Pause. Nhấp Open to LAN. Tùy chỉnh thiết lập cho ván chơi multiplayer. Nhấp Start LAN World để bắt đầu một ván chơi multiplayer. Mở game Minecraft trên máy tính thứ hai. Nhấp nút Multiplayer trong trình đơn chính của game Minecraft. Lựa chọn ván chơi và nhấp Join Server. Yêu cầu người host dịch chuyển tức thời tất cả người chơi lại với nhau.",
+      "prediction": "Bắt đầu chơi game Minecraft. Thiết lập mạng nội bộ. Thiết lập mạng nội bộ. Thiết lập mạng nội bộ. Thiết lập mạng nội bộ.",
+      "input_token_count": 739,
+      "used_input_token_count": 739,
+      "was_truncated": false,
+      "source_ids_sha256": "a98ba2cde97ed3d2ef08d6cbf63e5aec2faab64d2373c106d88030b4b9422c33",
+      "generated_token_count": 32,
+      "elapsed_seconds": 0.833912417999727,
+      "scores": {
+        "rouge1": {
+          "precision": 0.4,
+          "recall": 0.08849557522123894,
+          "f1": 0.14492753623188404
+        },
+        "rouge2": {
+          "precision": 0.20833333333333334,
+          "recall": 0.044642857142857144,
+          "f1": 0.07352941176470588
+        },
+        "rougeL": {
+          "precision": 0.2,
+          "recall": 0.04424778761061947,
+          "f1": 0.07246376811594202
+        }
+      }
+    }
+  },
+  {
+    "id": "vi_06dfbd1da77e8b104d493a9ac025815a362666ae82e0fcfed48bb34994ce2f4d",
+    "document": "Bạn có thể chơi game Minecraft PE với những người khác bằng cách kết nối vào máy chủ Minecraft PE. Để tìm ra các máy chủ này, bạn cần dùng ứng dụng trình duyệt web của mình. Những máy chủ này bao gồm đủ các kiểu chơi và chế độ game khác nhau để luôn đem đến cho người chơi trải nghiệm khác biệt. Có nhiều trang web liệt kê máy chủ phổ biến, ví dụ như: Minecraftpocket-servers.com MCPEstats.com MCPEhub.com/servers MCPEuniverse.com/pocketmine/ Hầu hết những trang liệt kê máy chủ đều cung cấp thông tin chi tiết về từng máy chủ, bao gồm các chế độ chơi game có sẵn, số lượng người chơi đã kết nối, địa điểm đặt máy chủ và nhiều thông tin khác nữa. Xem xét thông tin này để tìm thấy một máy chủ phù hợp với nhu cầu chơi game của bạn. Ghi lại phiên bản game mà máy chủ đang chạy. Minecraft Pocket Edition không cho phép bạn chuyển sang các phiên bản khác của game, vì thế bạn chỉ được phép kết nối vào những máy chủ chạy đúng phiên bản mà bạn đã cài đặt. Hầu hết các máy chủ đều được cập nhật lên phiên bản mới nhất trong vòng 24 tiếng kể từ khi phát hành. Địa chỉ máy chủ (server address) bao gồm nhiều chữ cái và/hoặc số được phân cách bằng dấu chấm. Số cổng (port number) được tách khỏi địa chỉ bằng dấu hai chấm (:). Bước này giúp mở danh sách thế giới của bạn. Nút này nằm ở góc trên bên phải. Bước này giúp bạn nhập thông tin về máy chủ. Bạn cần điền hết các ô và nhấp \"Add Server\" để thêm nó vào danh sách của bạn. Server Name (tên máy chủ) - Bạn có thể gõ bất cứ chữ nào vào đây. Việc gõ tên máy chủ giúp bạn dễ dàng nhận diện nó về sau này. Address - Gõ địa chỉ IP vào ô này. Port - Nhập số cổng vào đây. Số cổng là số xuất hiện sau : trong địa chỉ máy chủ. Game sẽ cố gắng kết nối với máy chủ. Sau khi kết nối thành công, bạn sẽ xuất hiện ở khu vực chào mừng của máy chủ. Nếu không kết nối được, có thể kể đến một vài nguyên nhân như sau: Bạn không thể kết nối khi máy chủ bị đầy (full) và không nhận được thông báo về vấn đề này. Bạn cũng không thể kết nối khi máy chủ đang ngoại tuyến (offline). Ngoài ra, bạn không thể kết nối trong trường hợp tên của bạn trùng với tên của một người chơi khác đã kết nối từ trước. Bạn được phép thay đổi tên trong game của mình từ phần Settings thuộc trình đơn chính của game Minecraft PE. Một số máy chủ yêu cầu bạn đăng ký trước khi bắt đầu chơi hoặc hưởng lợi trong game. Làm theo các bước trên màn hình để đăng ký địa chỉ email của bạn với máy chủ. Bạn cần mở thư xác nhận được gửi đến địa chỉ email của mình.",
+    "reference": "Mở trình duyệt web trên thiết bị. So sánh đặc điểm của máy chủ. Ghi lại địa chỉ máy chủ và số cổng. Mở game Minecraft PE và nhấp \"Play\". Nhấp vào nút \"Edit\". Nhấp nút \"External\" rồi nhấp \"Add Server\". Điền vào các ô cung cấp thông tin về máy chủ. Nhấp để kết nối với máy chủ mới được thêm vào. Đăng ký chơi trên máy chủ nếu cần thiết.",
+    "greedy": {
+      "id": "vi_06dfbd1da77e8b104d493a9ac025815a362666ae82e0fcfed48bb34994ce2f4d",
+      "group_id": "https://www.wikihow.vn/Ch%C6%A1i-Minecraft-Multiplayer",
+      "document": "Bạn có thể chơi game Minecraft PE với những người khác bằng cách kết nối vào máy chủ Minecraft PE. Để tìm ra các máy chủ này, bạn cần dùng ứng dụng trình duyệt web của mình. Những máy chủ này bao gồm đủ các kiểu chơi và chế độ game khác nhau để luôn đem đến cho người chơi trải nghiệm khác biệt. Có nhiều trang web liệt kê máy chủ phổ biến, ví dụ như: Minecraftpocket-servers.com MCPEstats.com MCPEhub.com/servers MCPEuniverse.com/pocketmine/ Hầu hết những trang liệt kê máy chủ đều cung cấp thông tin chi tiết về từng máy chủ, bao gồm các chế độ chơi game có sẵn, số lượng người chơi đã kết nối, địa điểm đặt máy chủ và nhiều thông tin khác nữa. Xem xét thông tin này để tìm thấy một máy chủ phù hợp với nhu cầu chơi game của bạn. Ghi lại phiên bản game mà máy chủ đang chạy. Minecraft Pocket Edition không cho phép bạn chuyển sang các phiên bản khác của game, vì thế bạn chỉ được phép kết nối vào những máy chủ chạy đúng phiên bản mà bạn đã cài đặt. Hầu hết các máy chủ đều được cập nhật lên phiên bản mới nhất trong vòng 24 tiếng kể từ khi phát hành. Địa chỉ máy chủ (server address) bao gồm nhiều chữ cái và/hoặc số được phân cách bằng dấu chấm. Số cổng (port number) được tách khỏi địa chỉ bằng dấu hai chấm (:). Bước này giúp mở danh sách thế giới của bạn. Nút này nằm ở góc trên bên phải. Bước này giúp bạn nhập thông tin về máy chủ. Bạn cần điền hết các ô và nhấp \"Add Server\" để thêm nó vào danh sách của bạn. Server Name (tên máy chủ) - Bạn có thể gõ bất cứ chữ nào vào đây. Việc gõ tên máy chủ giúp bạn dễ dàng nhận diện nó về sau này. Address - Gõ địa chỉ IP vào ô này. Port - Nhập số cổng vào đây. Số cổng là số xuất hiện sau : trong địa chỉ máy chủ. Game sẽ cố gắng kết nối với máy chủ. Sau khi kết nối thành công, bạn sẽ xuất hiện ở khu vực chào mừng của máy chủ. Nếu không kết nối được, có thể kể đến một vài nguyên nhân như sau: Bạn không thể kết nối khi máy chủ bị đầy (full) và không nhận được thông báo về vấn đề này. Bạn cũng không thể kết nối khi máy chủ đang ngoại tuyến (offline). Ngoài ra, bạn không thể kết nối trong trường hợp tên của bạn trùng với tên của một người chơi khác đã kết nối từ trước. Bạn được phép thay đổi tên trong game của mình từ phần Settings thuộc trình đơn chính của game Minecraft PE. Một số máy chủ yêu cầu bạn đăng ký trước khi bắt đầu chơi hoặc hưởng lợi trong game. Làm theo các bước trên màn hình để đăng ký địa chỉ email của bạn với máy chủ. Bạn cần mở thư xác nhận được gửi đến địa chỉ email của mình.",
+      "reference": "Mở trình duyệt web trên thiết bị. So sánh đặc điểm của máy chủ. Ghi lại địa chỉ máy chủ và số cổng. Mở game Minecraft PE và nhấp \"Play\". Nhấp vào nút \"Edit\". Nhấp nút \"External\" rồi nhấp \"Add Server\". Điền vào các ô cung cấp thông tin về máy chủ. Nhấp để kết nối với máy chủ mới được thêm vào. Đăng ký chơi trên máy chủ nếu cần thiết.",
+      "prediction": "Kết nối máy chủ Minecraft PE. Tìm máy chủ. Nhập địa chỉ máy chủ. Nhập địa chỉ máy chủ. Đăng ký địa chỉ email. Đăng ký địa chỉ email.",
+      "input_token_count": 637,
+      "used_input_token_count": 637,
+      "was_truncated": false,
+      "source_ids_sha256": "48854e1206a8f621c1001a2dc9bb34125d479bb7fe06c82f7ef9efc9acf715f4",
+      "generated_token_count": 37,
+      "elapsed_seconds": 0.7955382039999677,
+      "scores": {
+        "rouge1": {
+          "precision": 0.5517241379310345,
+          "recall": 0.2222222222222222,
+          "f1": 0.31683168316831684
+        },
+        "rouge2": {
+          "precision": 0.32142857142857145,
+          "recall": 0.1267605633802817,
+          "f1": 0.18181818181818182
+        },
+        "rougeL": {
+          "precision": 0.3448275862068966,
+          "recall": 0.1388888888888889,
+          "f1": 0.19801980198019806
+        }
+      }
+    },
+    "beam": {
+      "id": "vi_06dfbd1da77e8b104d493a9ac025815a362666ae82e0fcfed48bb34994ce2f4d",
+      "group_id": "https://www.wikihow.vn/Ch%C6%A1i-Minecraft-Multiplayer",
+      "document": "Bạn có thể chơi game Minecraft PE với những người khác bằng cách kết nối vào máy chủ Minecraft PE. Để tìm ra các máy chủ này, bạn cần dùng ứng dụng trình duyệt web của mình. Những máy chủ này bao gồm đủ các kiểu chơi và chế độ game khác nhau để luôn đem đến cho người chơi trải nghiệm khác biệt. Có nhiều trang web liệt kê máy chủ phổ biến, ví dụ như: Minecraftpocket-servers.com MCPEstats.com MCPEhub.com/servers MCPEuniverse.com/pocketmine/ Hầu hết những trang liệt kê máy chủ đều cung cấp thông tin chi tiết về từng máy chủ, bao gồm các chế độ chơi game có sẵn, số lượng người chơi đã kết nối, địa điểm đặt máy chủ và nhiều thông tin khác nữa. Xem xét thông tin này để tìm thấy một máy chủ phù hợp với nhu cầu chơi game của bạn. Ghi lại phiên bản game mà máy chủ đang chạy. Minecraft Pocket Edition không cho phép bạn chuyển sang các phiên bản khác của game, vì thế bạn chỉ được phép kết nối vào những máy chủ chạy đúng phiên bản mà bạn đã cài đặt. Hầu hết các máy chủ đều được cập nhật lên phiên bản mới nhất trong vòng 24 tiếng kể từ khi phát hành. Địa chỉ máy chủ (server address) bao gồm nhiều chữ cái và/hoặc số được phân cách bằng dấu chấm. Số cổng (port number) được tách khỏi địa chỉ bằng dấu hai chấm (:). Bước này giúp mở danh sách thế giới của bạn. Nút này nằm ở góc trên bên phải. Bước này giúp bạn nhập thông tin về máy chủ. Bạn cần điền hết các ô và nhấp \"Add Server\" để thêm nó vào danh sách của bạn. Server Name (tên máy chủ) - Bạn có thể gõ bất cứ chữ nào vào đây. Việc gõ tên máy chủ giúp bạn dễ dàng nhận diện nó về sau này. Address - Gõ địa chỉ IP vào ô này. Port - Nhập số cổng vào đây. Số cổng là số xuất hiện sau : trong địa chỉ máy chủ. Game sẽ cố gắng kết nối với máy chủ. Sau khi kết nối thành công, bạn sẽ xuất hiện ở khu vực chào mừng của máy chủ. Nếu không kết nối được, có thể kể đến một vài nguyên nhân như sau: Bạn không thể kết nối khi máy chủ bị đầy (full) và không nhận được thông báo về vấn đề này. Bạn cũng không thể kết nối khi máy chủ đang ngoại tuyến (offline). Ngoài ra, bạn không thể kết nối trong trường hợp tên của bạn trùng với tên của một người chơi khác đã kết nối từ trước. Bạn được phép thay đổi tên trong game của mình từ phần Settings thuộc trình đơn chính của game Minecraft PE. Một số máy chủ yêu cầu bạn đăng ký trước khi bắt đầu chơi hoặc hưởng lợi trong game. Làm theo các bước trên màn hình để đăng ký địa chỉ email của bạn với máy chủ. Bạn cần mở thư xác nhận được gửi đến địa chỉ email của mình.",
+      "reference": "Mở trình duyệt web trên thiết bị. So sánh đặc điểm của máy chủ. Ghi lại địa chỉ máy chủ và số cổng. Mở game Minecraft PE và nhấp \"Play\". Nhấp vào nút \"Edit\". Nhấp nút \"External\" rồi nhấp \"Add Server\". Điền vào các ô cung cấp thông tin về máy chủ. Nhấp để kết nối với máy chủ mới được thêm vào. Đăng ký chơi trên máy chủ nếu cần thiết.",
+      "prediction": "Kết nối vào máy chủ Minecraft PE. Kết nối vào máy chủ Minecraft PE. Đăng ký máy chủ. Đăng ký địa chỉ email. Đăng ký địa chỉ email. Đăng ký địa chỉ email. Đăng ký địa chỉ email. Đăng ký địa chỉ email. Đăng ký địa chỉ email. Đăng ký địa chỉ email.",
+      "input_token_count": 637,
+      "used_input_token_count": 637,
+      "was_truncated": false,
+      "source_ids_sha256": "48854e1206a8f621c1001a2dc9bb34125d479bb7fe06c82f7ef9efc9acf715f4",
+      "generated_token_count": 66,
+      "elapsed_seconds": 1.6604476949996752,
+      "scores": {
+        "rouge1": {
+          "precision": 0.3018867924528302,
+          "recall": 0.2222222222222222,
+          "f1": 0.25599999999999995
+        },
+        "rouge2": {
+          "precision": 0.1346153846153846,
+          "recall": 0.09859154929577464,
+          "f1": 0.1138211382113821
+        },
+        "rougeL": {
+          "precision": 0.22641509433962265,
+          "recall": 0.16666666666666666,
+          "f1": 0.19199999999999998
+        }
+      }
+    }
+  },
+  {
+    "id": "vi_07e6cf42893b328cb65aaecf12dd4591fda7fc3fa592952bc157263596518736",
+    "document": "Đây là cách duy nhất để biết họ đã xem tin nhắn của bạn hay chưa. Nếu tin nhắn gửi đi có màu xanh dương, người nhận có thể nhận tin nhắn iMessage. Nếu tin nhắn gửi đi có màu xanh lá, người nhận đang sử dụng điện thoại hoặc máy tính bảng không có tiện ích iMessage (thường là hệ điều hành Android). Trong trường hợp này, bạn sẽ không được thông báo khi người nhận đã đọc tin nhắn của mình. Khi bạn và người liên lạc đều bật chế độ này, cả hai bên sẽ biết khi tin nhắn của nhau đã được đọc. Nếu chỉ có bạn bật chế độ này, người liên lạc sẽ biết khi bạn đã đọc tin nhắn của họ, nhưng bạn không biết khi họ đã đọc tin nhắn của bạn. Sau đây là cách để bật chế độ gửi thông báo đã đọc: Mở ứng dụng Settings (Cài đặt) của iPhone. Vuốt xuống bên dưới màn hình và chọn Messages (Tin nhắn). Đẩy thanh trượt “Send Read Receipts” (Gửi thông báo đã đọc) sang vị trí On (Bật) màu xanh lá. Bạn chỉ có thể gửi tin nhắn iMessage qua mạng internet, thế nên hãy đảm bảo thiết bị đã có kết nối Wi-Fi hoặc dữ liệu di động. Nếu chưa có mạng, bạn chỉ có thể gửi tin nhắn văn bản thông thường và sẽ không được thông báo khi tin nhắn đã được đọc. Đảm bảo bạn thấy “iMessage” trong phần nhập dữ liệu. Điều đó có nghĩa là bạn đã kết nối mạng internet và người nhận có thể nhận tin nhắn iMessage. Khi gửi tin nhắn iMessage, bạn sẽ thấy từ “Delivered” (Đã gửi) ở bên dưới tin nhắn sau khi tin nhắn đã được gửi. Nếu người nhận đã bật chế độ gửi thông báo đã đọc, bạn sẽ thấy từ “Read” (Đã đọc) bên dưới tin nhắn.",
+    "reference": "Đảm bảo người mà bạn gửi tin nhắn cũng sử dụng iMessage. Bật chế độ gửi thông báo đã đọc. Kết nối mạng internet. Mở ứng dụng tin nhắn với biểu tượng khung trò chuyện màu trắng trên nền xanh lá, thường hiển thị bên dưới màn hình chính. Soạn hoặc trả lời tin nhắn. Gửi tin nhắn. Chờ xem thông báo đã đọc.",
+    "greedy": {
+      "id": "vi_07e6cf42893b328cb65aaecf12dd4591fda7fc3fa592952bc157263596518736",
+      "group_id": "https://www.wikihow.vn/Nh%E1%BA%ADn-bi%E1%BA%BFt-khi-ng%C6%B0%E1%BB%9Di-kh%C3%A1c-%C4%91%C3%A3-%C4%91%E1%BB%8Dc-tin-nh%E1%BA%AFn-c%E1%BB%A7a-b%E1%BA%A1n-tr%C3%AAn-iPhone-v%C3%A0-iPad",
+      "document": "Đây là cách duy nhất để biết họ đã xem tin nhắn của bạn hay chưa. Nếu tin nhắn gửi đi có màu xanh dương, người nhận có thể nhận tin nhắn iMessage. Nếu tin nhắn gửi đi có màu xanh lá, người nhận đang sử dụng điện thoại hoặc máy tính bảng không có tiện ích iMessage (thường là hệ điều hành Android). Trong trường hợp này, bạn sẽ không được thông báo khi người nhận đã đọc tin nhắn của mình. Khi bạn và người liên lạc đều bật chế độ này, cả hai bên sẽ biết khi tin nhắn của nhau đã được đọc. Nếu chỉ có bạn bật chế độ này, người liên lạc sẽ biết khi bạn đã đọc tin nhắn của họ, nhưng bạn không biết khi họ đã đọc tin nhắn của bạn. Sau đây là cách để bật chế độ gửi thông báo đã đọc: Mở ứng dụng Settings (Cài đặt) của iPhone. Vuốt xuống bên dưới màn hình và chọn Messages (Tin nhắn). Đẩy thanh trượt “Send Read Receipts” (Gửi thông báo đã đọc) sang vị trí On (Bật) màu xanh lá. Bạn chỉ có thể gửi tin nhắn iMessage qua mạng internet, thế nên hãy đảm bảo thiết bị đã có kết nối Wi-Fi hoặc dữ liệu di động. Nếu chưa có mạng, bạn chỉ có thể gửi tin nhắn văn bản thông thường và sẽ không được thông báo khi tin nhắn đã được đọc. Đảm bảo bạn thấy “iMessage” trong phần nhập dữ liệu. Điều đó có nghĩa là bạn đã kết nối mạng internet và người nhận có thể nhận tin nhắn iMessage. Khi gửi tin nhắn iMessage, bạn sẽ thấy từ “Delivered” (Đã gửi) ở bên dưới tin nhắn sau khi tin nhắn đã được gửi. Nếu người nhận đã bật chế độ gửi thông báo đã đọc, bạn sẽ thấy từ “Read” (Đã đọc) bên dưới tin nhắn.",
+      "reference": "Đảm bảo người mà bạn gửi tin nhắn cũng sử dụng iMessage. Bật chế độ gửi thông báo đã đọc. Kết nối mạng internet. Mở ứng dụng tin nhắn với biểu tượng khung trò chuyện màu trắng trên nền xanh lá, thường hiển thị bên dưới màn hình chính. Soạn hoặc trả lời tin nhắn. Gửi tin nhắn. Chờ xem thông báo đã đọc.",
+      "prediction": "Mở ứng dụng iMessage. Bật chế độ gửi thông báo đã đọc. Bật chế độ gửi thông báo đã đọc. Bật chế độ gửi thông báo đã đọc.",
+      "input_token_count": 415,
+      "used_input_token_count": 415,
+      "was_truncated": false,
+      "source_ids_sha256": "8993ecdb3652fb743c8276181347fa85f2a34f8c9892ec53351d82842d677788",
+      "generated_token_count": 36,
+      "elapsed_seconds": 0.9503885609997269,
+      "scores": {
+        "rouge1": {
+          "precision": 0.6428571428571429,
+          "recall": 0.28125,
+          "f1": 0.391304347826087
+        },
+        "rouge2": {
+          "precision": 0.5185185185185185,
+          "recall": 0.2222222222222222,
+          "f1": 0.3111111111111111
+        },
+        "rougeL": {
+          "precision": 0.5357142857142857,
+          "recall": 0.234375,
+          "f1": 0.3260869565217391
+        }
+      }
+    },
+    "beam": {
+      "id": "vi_07e6cf42893b328cb65aaecf12dd4591fda7fc3fa592952bc157263596518736",
+      "group_id": "https://www.wikihow.vn/Nh%E1%BA%ADn-bi%E1%BA%BFt-khi-ng%C6%B0%E1%BB%9Di-kh%C3%A1c-%C4%91%C3%A3-%C4%91%E1%BB%8Dc-tin-nh%E1%BA%AFn-c%E1%BB%A7a-b%E1%BA%A1n-tr%C3%AAn-iPhone-v%C3%A0-iPad",
+      "document": "Đây là cách duy nhất để biết họ đã xem tin nhắn của bạn hay chưa. Nếu tin nhắn gửi đi có màu xanh dương, người nhận có thể nhận tin nhắn iMessage. Nếu tin nhắn gửi đi có màu xanh lá, người nhận đang sử dụng điện thoại hoặc máy tính bảng không có tiện ích iMessage (thường là hệ điều hành Android). Trong trường hợp này, bạn sẽ không được thông báo khi người nhận đã đọc tin nhắn của mình. Khi bạn và người liên lạc đều bật chế độ này, cả hai bên sẽ biết khi tin nhắn của nhau đã được đọc. Nếu chỉ có bạn bật chế độ này, người liên lạc sẽ biết khi bạn đã đọc tin nhắn của họ, nhưng bạn không biết khi họ đã đọc tin nhắn của bạn. Sau đây là cách để bật chế độ gửi thông báo đã đọc: Mở ứng dụng Settings (Cài đặt) của iPhone. Vuốt xuống bên dưới màn hình và chọn Messages (Tin nhắn). Đẩy thanh trượt “Send Read Receipts” (Gửi thông báo đã đọc) sang vị trí On (Bật) màu xanh lá. Bạn chỉ có thể gửi tin nhắn iMessage qua mạng internet, thế nên hãy đảm bảo thiết bị đã có kết nối Wi-Fi hoặc dữ liệu di động. Nếu chưa có mạng, bạn chỉ có thể gửi tin nhắn văn bản thông thường và sẽ không được thông báo khi tin nhắn đã được đọc. Đảm bảo bạn thấy “iMessage” trong phần nhập dữ liệu. Điều đó có nghĩa là bạn đã kết nối mạng internet và người nhận có thể nhận tin nhắn iMessage. Khi gửi tin nhắn iMessage, bạn sẽ thấy từ “Delivered” (Đã gửi) ở bên dưới tin nhắn sau khi tin nhắn đã được gửi. Nếu người nhận đã bật chế độ gửi thông báo đã đọc, bạn sẽ thấy từ “Read” (Đã đọc) bên dưới tin nhắn.",
+      "reference": "Đảm bảo người mà bạn gửi tin nhắn cũng sử dụng iMessage. Bật chế độ gửi thông báo đã đọc. Kết nối mạng internet. Mở ứng dụng tin nhắn với biểu tượng khung trò chuyện màu trắng trên nền xanh lá, thường hiển thị bên dưới màn hình chính. Soạn hoặc trả lời tin nhắn. Gửi tin nhắn. Chờ xem thông báo đã đọc.",
+      "prediction": "Bật chế độ gửi thông báo đã đọc. Bật chế độ gửi thông báo đã đọc. Bật chế độ gửi thông báo đã đọc. Bật chế độ gửi thông báo đã đọc.",
+      "input_token_count": 415,
+      "used_input_token_count": 415,
+      "was_truncated": false,
+      "source_ids_sha256": "8993ecdb3652fb743c8276181347fa85f2a34f8c9892ec53351d82842d677788",
+      "generated_token_count": 37,
+      "elapsed_seconds": 0.9343892209999467,
+      "scores": {
+        "rouge1": {
+          "precision": 0.4375,
+          "recall": 0.21875,
+          "f1": 0.2916666666666667
+        },
+        "rouge2": {
+          "precision": 0.3225806451612903,
+          "recall": 0.15873015873015872,
+          "f1": 0.2127659574468085
+        },
+        "rougeL": {
+          "precision": 0.4375,
+          "recall": 0.21875,
+          "f1": 0.2916666666666667
+        }
+      }
+    }
+  }
+]
