@@ -4,6 +4,14 @@ Xây dựng hệ thống tóm tắt sinh văn bản tiếng Việt bằng cách 
 
 Dự án sử dụng PyTorch để huấn luyện trên Google Colab, đánh giá bằng ROUGE-1, ROUGE-2 và ROUGE-L, so sánh với baseline trích xuất và xây dựng giao diện demo bằng Gradio.
 
+## Chuẩn bị dữ liệu
+
+Mở `notebooks/vietnamese_summarization_data_preparation.ipynb` trên Google Colab bằng runtime thường, không cần GPU. Dùng phiên mới và chạy lần lượt chín cell code từ trên xuống; các cell Markdown giải thích ngay trước từng phần. Nếu Colab yêu cầu khởi động lại sau khi cài thư viện, khởi động lại rồi chạy hai cell code đầu và tiếp tục từ cell import/cấu hình, không cần cài lại ngay.
+
+Notebook lấy mã nền `b21dc1b3313021c88ff37a834fda5b3cdb83b2f3` từ GitHub, dùng cache WikiLingua trên Drive, chuẩn hóa/làm sạch, chia nhóm và khôi phục đúng ID tập con từ manifest đã chốt. Chỉ có một luồng chạy, không tải mã thủ công hoặc chọn chế độ tạo/đọc dữ liệu. Thống kê token trên train không tạo batch; tokenization và DataLoader phục vụ học thuộc notebook huấn luyện.
+
+Đầu ra trên Drive: `MyDrive/vietnamese-summarization/data/processed/` chứa `train.jsonl`, `validation.jsonl`, `test.jsonl` với 2.000/201/200 mẫu; `data/manifests/` chứa metadata đi kèm. Nội dung file đã có phải khớp, nếu khác chương trình dừng thay vì ghi đè. Không chọn lại ID hoặc dùng test để điều chỉnh mô hình. Sau khi chạy, lưu notebook với output cuối gọn về `notebooks/`; không cần tải JSONL vào source hoặc thay các manifest đã chốt trong Git.
+
 ## Chạy demo từ phiên Colab mới
 
 1. Mở `notebooks/vietnamese_summarization_demo.ipynb` trong Google Colab và chọn runtime T4 GPU. Dùng chức năng ngắt kết nối và xóa runtime cũ để bắt đầu phiên mới; chỉ xóa output không xóa các biến trong bộ nhớ.
