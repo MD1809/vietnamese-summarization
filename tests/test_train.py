@@ -1301,16 +1301,18 @@ class FullTrainingTests(unittest.TestCase):
                                     with patch("builtins.print"):
                                         first = fit_model(model, "tokenizer", optimizer, train_loader, validation_loader, profile)
                                         resumed = fit_model(model, "tokenizer", optimizer, train_loader, validation_loader, profile, progress=checkpoints[0])
-            self.assertEqual(first["completed_epochs"], 3)
-            self.assertEqual(resumed["global_step"], 6)
-            self.assertEqual([row["epoch"] for row in resumed["history"]], [1, 2, 3])
+            expected_epochs = profile["train_config"]["num_epochs"]
+            expected_epoch_numbers = list(range(1, expected_epochs + 1))
+            self.assertEqual(first["completed_epochs"], expected_epochs)
+            self.assertEqual(resumed["global_step"], expected_epochs * 2)
+            self.assertEqual([row["epoch"] for row in resumed["history"]], expected_epoch_numbers)
             import csv
             with Path(resumed["history_file"]).open(encoding="utf-8", newline="") as file:
                 rows = list(csv.DictReader(file))
-            self.assertEqual([row["epoch"] for row in rows], ["1", "2", "3"])
-            self.assertEqual([row["global_step"] for row in rows], ["2", "4", "6"])
-            self.assertEqual(len(checkpoints), 5)
-            self.assertEqual(len(checkpoints[-1]["training_history"]), 3)
+            self.assertEqual([int(row["epoch"]) for row in rows], expected_epoch_numbers)
+            self.assertEqual([int(row["global_step"]) for row in rows], [epoch * 2 for epoch in expected_epoch_numbers])
+            self.assertEqual(len(checkpoints), expected_epochs * 2 - 1)
+            self.assertEqual(len(checkpoints[-1]["training_history"]), expected_epochs)
 
     def test_changed_source_is_rejected_before_training(self):
         torch_module, model = ResourceCheckTests().examples()

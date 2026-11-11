@@ -12,6 +12,24 @@ Notebook lấy mã nền `b21dc1b3313021c88ff37a834fda5b3cdb83b2f3` từ GitHub,
 
 Đầu ra trên Drive: `MyDrive/vietnamese-summarization/data/processed/` chứa `train.jsonl`, `validation.jsonl`, `test.jsonl` với 2.000/201/200 mẫu; `data/manifests/` chứa metadata đi kèm. Nội dung file đã có phải khớp, nếu khác chương trình dừng thay vì ghi đè. Không chọn lại ID hoặc dùng test để điều chỉnh mô hình. Sau khi chạy, lưu notebook với output cuối gọn về `notebooks/`; không cần tải JSONL vào source hoặc thay các manifest đã chốt trong Git.
 
+## Huấn luyện một run mới
+
+Mở `notebooks/vietnamese_summarization_train.ipynb` trên Colab với GPU T4. Notebook có 13 cell code, chạy theo thứ tự: kết nối/lấy mã → tokenize/DataLoader → tải ViT5-Base và AdamW → vòng lặp epoch → validation và last/best → loss/phân tích → sinh tóm tắt → so sánh greedy/beam trên validation. Mã module nền là `b5cb961ed118f014d8fc4c5c5af607d429361949`; không tải file mã thủ công.
+
+Mặc định `resume_run_id=""`: fine-tune mới từ ViT5-Base tiền huấn luyện, tạo run ID và thư mục riêng trên Drive. Không có cờ tắt huấn luyện hoặc đường dẫn gắn cứng kết quả run cũ. Cell 7 chứa vòng lặp epoch; `src.train.train_epoch` và `train_accumulated_group` thực hiện forward/loss/backward, tích lũy gradient, clipping và optimizer.step. Sau mỗi epoch chạy validation, chọn best theo loss và lưu last.
+
+Đầu vào là JSONL/manifest trên Drive do notebook dữ liệu tạo. Cấu hình đang dùng: nguồn/đích 1024/128, batch 1, accumulation 8, AdamW learning rate 5e-5, tối đa 10 epoch. Muốn thử cấu hình khác, sửa `configs/train.json`, commit/push và cập nhật `target_commit` trước khi bắt đầu run mới; thay quy mô dữ liệu cần chuẩn bị manifest nhất quán. Không sửa số epoch/learning rate giữa một run đang resume.
+
+Nếu Colab ngắt, nhập run ID đã lưu vào `resume_run_id`, dùng đúng commit/cấu hình rồi chạy lại từ đầu. Model, optimizer, tiến độ và RNG/DataLoader được khôi phục từ last ở cuối epoch; epoch đang dở được chạy lại. Run có source patch/snapshot phát triển cần khôi phục đúng source riêng, notebook sạch không tự bỏ qua kiểm tra tương thích.
+
+Mọi kết quả lấy từ run vừa tạo hoặc resume: log, summary, phân tích loss và `sample_summary.json` nằm trong `Drive/outputs/<run_id>/`; trọng số ở `Drive/checkpoints/<run_id>/last/` và `best/`. So sánh validation ghi vào `Drive/outputs/decoding_comparison_<UTC>/` và ghi đúng checkpoint run ID. Để giữ kết quả run mới trong source, dùng `reports/training_runs/<run_id>/`, đặt PNG trong `figures/`; không ghi đè `reports/recovery/` hoặc báo cáo lịch sử.
+
+Cell test cuối mặc định `evaluate_test=False`. Sau khi xem validation và chốt, điền `selected_method="greedy"` hoặc `"beam"` rồi mới bật test. Quyết định/cấu hình được ghi trước khi đọc test, baseline và ViT5 dùng cùng nguồn, kết quả thuộc đúng best của run mới và nằm trong `outputs/<run_id>/test_evaluation_<UTC>/`. Test từng được xem trong dự án, nên phải nêu điều đó khi báo cáo các lượt cải tiến; không dùng test để chọn siêu tham số.
+
+Chạy toàn bộ luồng chính thực sự tốn thời gian huấn luyện và sinh trên validation. Nếu Colab yêu cầu khởi động lại sau cài thư viện, chạy hai cell code đầu rồi tiếp tục từ cell import/cấu hình. Kết quả báo cáo trước đây vẫn được giữ trong `reports/recovery/`, `reports/decoding_comparison/` và `reports/test_evaluation/`; notebook mới không đọc chúng để giả làm đầu ra của run vừa huấn luyện.
+
+Lượt chạy đã kiểm chứng: `vit5_finetuning_20261111_153238_146403`, đủ 10 epoch/2.500 update, best epoch 2/step 500, validation loss 2.102667951223594. [Log và summary](reports/training_runs/vit5_finetuning_20261111_153238_146403/training_summary.json), [phân tích](reports/training_runs/vit5_finetuning_20261111_153238_146403/training_analysis.md) và [biểu đồ](reports/training_runs/vit5_finetuning_20261111_153238_146403/figures/training_loss.png). Notebook ghi validation ROUGE-L F1 x100: greedy 20.9959, beam 4 là 21.3983 trên 201 mẫu; test của run mới chưa chạy. Điểm test lịch sử không được gán cho run này.
+
 ## Chạy demo từ phiên Colab mới
 
 1. Mở `notebooks/vietnamese_summarization_demo.ipynb` trong Google Colab và chọn runtime T4 GPU. Dùng chức năng ngắt kết nối và xóa runtime cũ để bắt đầu phiên mới; chỉ xóa output không xóa các biến trong bộ nhớ.
