@@ -1,10 +1,30 @@
 import unittest
+import hashlib
+import json
+import tempfile
+from pathlib import Path
 from unittest.mock import Mock, call, patch
 
-from app.gradio_app import DemoSummarizer
+from app.gradio_app import DemoSummarizer, DemoExamples
+from app.demo_data import select_completed_run, load_validation_examples
 
 
 class DemoSummarizerTests(unittest.TestCase):
+    def test_reference_is_only_returned_for_exact_selected_document(self):
+        summarizer = Mock()
+        summarizer.summarize.return_value = ("generated", "")
+        handler = DemoExamples(summarizer, [{"id": "v1", "document": "source", "summary": "reference"}])
+        self.assertEqual(handler.select("v1")[:3], ("source", "reference", ""))
+        self.assertEqual(handler.summarize("source", "v1"), ("reference", "generated", ""))
+        for text, identifier in [("edited", "v1"), ("source", ""), ("source", "unknown")]:
+            result = handler.summarize(text, identifier)
+            self.assertEqual(result[:2], ("", "generated"))
+        self.assertEqual(handler.edit()[:2], ("", ""))
+        self.assertEqual(handler.select("")[:3], ("", "", ""))
+        for request in summarizer.summarize.call_args_list:
+            self.assertEqual(len(request.args), 1)
+            self.assertNotIn("reference", request.args)
+
     def test_repeated_requests_reuse_loaded_model_and_tokenizer(self):
         model = Mock()
         tokenizer = Mock()
@@ -111,3 +131,73 @@ class DemoSummarizerTests(unittest.TestCase):
                 self.assertIn(expected, str(caught.exception))
                 self.assertIn(str(original), str(caught.exception))
                 self.assertIs(caught.exception.__cause__, original)
+
+
+class DemoDataTests(unittest.TestCase):
+    def make_run(self, root, run_id):
+        run = root / "outputs" / run_id
+        run.mkdir(parents=True)
+        config = {"num_epochs": 10, "paths": {"processed_manifest": "data/manifests/processed.json"}}
+        profile = {"run_id": run_id, "train_config": config}
+        summary = {
+            "run_id": run_id, "run_status": "completed", "completed_epochs": 10,
+            "best_epoch": 2, "best_global_step": 500, "best_validation_loss": 2.1,
+        }
+        (run / "config.json").write_text(json.dumps(profile), encoding="utf-8")
+        (run / "training_summary.json").write_text(json.dumps(summary), encoding="utf-8")
+        best = root / "checkpoints" / run_id / "best"
+        best.mkdir(parents=True)
+        for name in ["config.json", "model.safetensors", "spiece.model", "tokenizer_config.json"]:
+            (best / name).write_bytes(b"fixture")
+        (best / "selection.json").write_text(json.dumps({
+            "epoch": 2, "global_step": 500, "validation_loss": 2.1, "train_config": config,
+        }), encoding="utf-8")
+        return profile, best
+
+    def test_latest_completed_is_selected_and_missing_best_does_not_fall_back(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_run(root, "vit5_finetuning_20261106_000000_000000")
+            profile, best = self.make_run(root, "vit5_finetuning_20261111_000000_000000")
+            (root / "outputs" / "vit5_finetuning_20261112_000000_000000").mkdir()
+            selected, summary, checkpoint = select_completed_run(root)
+            self.assertEqual(selected, profile)
+            self.assertEqual(checkpoint, best.parent)
+            (best / "model.safetensors").unlink()
+            with self.assertRaises(FileNotFoundError):
+                select_completed_run(root)
+
+    def test_explicit_incomplete_run_and_mismatched_best_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile, best = self.make_run(root, "vit5_finetuning_20261111_000000_000000")
+            summary_path = root / "outputs" / profile["run_id"] / "training_summary.json"
+            summary = json.loads(summary_path.read_text())
+            summary["best_epoch"] = 3
+            summary_path.write_text(json.dumps(summary))
+            with self.assertRaises(ValueError):
+                select_completed_run(root)
+            summary["run_status"] = "interrupted"
+            summary_path.write_text(json.dumps(summary))
+            with self.assertRaises(ValueError):
+                select_completed_run(root, profile["run_id"])
+
+    def test_validation_references_are_verified_and_test_is_not_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile, best = self.make_run(root, "vit5_finetuning_20261111_000000_000000")
+            validation = root / "data" / "processed" / "validation.jsonl"
+            validation.parent.mkdir(parents=True)
+            rows = [{"id": "v1", "document": "source", "summary": "reference"}]
+            content = (json.dumps(rows[0]) + "\n").encode()
+            validation.write_bytes(content)
+            manifest = {"files": {"validation": {
+                "path": "data/processed/validation.jsonl", "pair_count": 1,
+                "byte_count": len(content), "sha256": hashlib.sha256(content).hexdigest(),
+            }}}
+            run = root / "outputs" / profile["run_id"]
+            (run / "processed.json").write_text(json.dumps(manifest), encoding="utf-8")
+            self.assertEqual(load_validation_examples(root, profile), rows)
+            validation.write_bytes(b"changed")
+            with self.assertRaises(ValueError):
+                load_validation_examples(root, profile)

@@ -32,17 +32,17 @@ Lượt chạy đã kiểm chứng: `vit5_finetuning_20261111_153238_146403`, đ
 
 ## Chạy demo từ phiên Colab mới
 
-1. Mở `notebooks/vietnamese_summarization_demo.ipynb` trong Google Colab và chọn runtime T4 GPU. Dùng chức năng ngắt kết nối và xóa runtime cũ để bắt đầu phiên mới; chỉ xóa output không xóa các biến trong bộ nhớ.
-2. Drive cần có `MyDrive/vietnamese-summarization/checkpoints/vit5_finetuning_20261106_161925_175323/best/`. Thư mục chứa model/tokenizer và `selection.json`; trọng số không nằm trong GitHub. Đây là checkpoint người thực hiện đã lưu trên Drive của mình, chưa cung cấp liên kết tải công khai.
-3. Chạy cell 1–4 để kết nối Drive, lấy mã nền `c38254699f346b9c1205cb2b3d567fa04fbbe174`, cài thư viện và kiểm tra GPU. Nếu Colab yêu cầu khởi động lại sau khi cài, khởi động lại rồi chạy cell 1, 2 và tiếp tục từ cell 4.
-4. Cell 5 import `app.gradio_app` trực tiếp từ repository; không chọn hoặc tải file mã thủ công. Cell 6 tải model/tokenizer một lần; output cần có `cuda:0`, best epoch 2, global step 500 và validation loss khoảng 2.110765.
-5. Chạy cell 7 để mở Gradio, nhập văn bản và bấm **Tóm tắt**. Liên kết công khai chỉ dùng khi ứng dụng còn hoạt động trong phiên Colab. Cell 8 kiểm tra xử lý đầu vào; cell 9 lưu ba ví dụ dự phòng, không huấn luyện lại hoặc cập nhật trọng số.
+1. Mở `notebooks/vietnamese_summarization_demo.ipynb` trong phiên Colab mới với T4 GPU. Notebook gồm sáu cell code, không cần upload mã hoặc tải file kết quả thủ công.
+2. Cell 1 kết nối Drive. Để `demo_run_id=""` để chọn run mới nhất có `training_summary.json` ghi hoàn tất, theo thời gian tạo trong tên run; có thể điền một run ID hoàn tất cụ thể. Run đang huấn luyện dở chưa được chọn. Drive cần giữ `outputs/<run_id>/config.json`, `training_summary.json`, bản sao processed manifest, dữ liệu validation và `checkpoints/<run_id>/best/`.
+3. Cell 2 lấy mã demo mới nhất đã push lên `origin/main` và cố định hash trong phiên. Cell 3 cài thư viện. Nếu Colab yêu cầu khởi động lại, chạy lại cell 1, 2 rồi tiếp tục từ cell 4.
+4. Cell 4 kiểm tra run/best, đọc cấu hình train/generation từ hồ sơ run và đọc các mẫu validation đúng hash manifest. Cấu hình được lưu tạm ngoài repository, không thay configs của lần train đang dở. Không đọc test hoặc tải lại WikiLingua. Nếu best của run đã chọn bị thiếu hoặc không khớp, dừng với lỗi rõ ràng, không tự chuyển sang model cũ.
+5. Cell 5 tải model/tokenizer một lần lên GPU; các lần bấm nút dùng lại model. Cell 6 mở Gradio: chọn mẫu validation để điền văn bản và bản tham chiếu, bấm **Tóm tắt** để so sánh với ViT5 ở ô bên cạnh. Hiển thị toàn bộ mẫu validation theo thứ tự file, không chọn mẫu dựa vào đầu ra. Văn bản tự nhập không có tham chiếu; sửa văn bản sẽ xóa tham chiếu/kết quả cũ. Bản tham chiếu không truyền vào mô hình. Liên kết công khai chỉ hoạt động trong phiên Colab đang chạy.
 
 Cấu hình trình diễn: nguồn tối đa 1024 token, tối đa 128 token mới, beam 4 và không lấy mẫu ngẫu nhiên. Văn bản vượt giới hạn chỉ được tóm tắt từ phần đầu; giao diện thông báo số token đã giữ. Model vẫn có thể lặp, thiếu ý hoặc sinh sai thông tin; xem phân tích tại `reports/test_evaluation/test_evaluation_20261108_183331_879067/error_analysis.md`.
 
 ## Kết quả dự phòng khi báo cáo
 
-Sau khi chạy cell 9, lưu file tải về thành `reports/demo_examples.jsonl`. Bản sao trên Drive nằm trong `outputs/demo_fallback_<thời gian UTC>/demo_examples.jsonl`; cell in đường dẫn cụ thể. Giữ cùng notebook đã lưu output để đối chiếu lượt chạy.
+`reports/demo_examples.jsonl` giữ ba ví dụ lịch sử đã tạo trước khi dọn notebook; metadata ghi đúng run sinh chúng. Notebook demo mới chỉ mở ứng dụng, không tạo lại bộ ví dụ này. Sau khi chạy demo, tải notebook về `notebooks/vietnamese_summarization_demo.ipynb` nếu cần lưu trạng thái chạy.
 
 Mỗi dòng JSON là một ví dụ gồm `example_id`, `source`, `summary`, `message` và `metadata` ghi checkpoint, cấu hình, phiên bản mã/thư viện, thời điểm sinh. Ba đầu vào tự soạn dùng để trình diễn; không coi chúng là tập đánh giá độc lập hoặc khẳng định chưa xuất hiện trong dữ liệu huấn luyện.
 
