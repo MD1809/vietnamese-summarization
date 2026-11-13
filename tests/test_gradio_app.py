@@ -10,6 +10,33 @@ from app.demo_data import select_completed_run, load_validation_examples
 
 
 class DemoSummarizerTests(unittest.TestCase):
+    def test_saved_textrank_parameters_are_used_for_demo(self):
+        settings = {"damping": 0.9, "tolerance": 0.00001, "max_iterations": 150}
+        with patch("app.gradio_app.load_summarizer", return_value=(Mock(), Mock(), {})):
+            with patch("app.gradio_app.summarize_textrank") as extract:
+                with patch("app.gradio_app.summarize_text") as generate:
+                    extract.return_value = {
+                        "summary": "extracted", "used_input_ids": [1], "textrank_config": settings,
+                        "summary_was_truncated": False, "converged": True,
+                    }
+                    generate.return_value = {"summary": "generated", "used_input_ids": [1], "was_truncated": False}
+                    handler = DemoSummarizer("run", textrank_config=settings)
+                    self.assertEqual(handler.compare("source"), ("extracted", "generated", ""))
+                    self.assertEqual(extract.call_args.kwargs, {
+                        "config_path": "configs/train.json",
+                        "damping": 0.9, "tolerance": 0.00001, "max_iterations": 150,
+                    })
+
+    def test_textrank_variant_mismatch_does_not_generate_or_display_comparison(self):
+        settings = {"damping": 0.85, "tolerance": 0.000001, "max_iterations": 100}
+        with patch("app.gradio_app.load_summarizer", return_value=(Mock(), Mock(), {})):
+            with patch("app.gradio_app.summarize_textrank", return_value={"textrank_config": {"damping": 0.9}}):
+                with patch("app.gradio_app.summarize_text") as generate:
+                    handler = DemoSummarizer("run", textrank_config=settings)
+                    with self.assertRaises(RuntimeError):
+                        handler.compare("source")
+                    generate.assert_not_called()
+
     def test_comparison_reuses_model_tokenizer_and_configuration(self):
         with patch("app.gradio_app.load_summarizer") as load:
             with patch("app.gradio_app.summarize_textrank") as extract:

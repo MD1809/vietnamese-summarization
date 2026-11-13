@@ -21,9 +21,13 @@ class DemoSummarizer:
         checkpoint_run_dir,
         config_path="configs/train.json",
         generation_config_path="configs/generation.json",
+        textrank_config=None,
     ):
         self.config_path = config_path
         self.generation_config_path = generation_config_path
+        self.textrank_config = None
+        if textrank_config is not None:
+            self.textrank_config = textrank_config.copy()
         try:
             self.model, self.tokenizer, self.selection = load_summarizer(
                 checkpoint_run_dir,
@@ -80,11 +84,23 @@ class DemoSummarizer:
             return "", "", "Vui lòng nhập văn bản cần tóm tắt."
         if normalize_text(text) == "":
             return "", "", "Vui lòng nhập văn bản cần tóm tắt."
-        textrank_result = summarize_textrank(
-            text,
-            self.tokenizer,
-            config_path=self.config_path,
-        )
+        if self.textrank_config is None:
+            textrank_result = summarize_textrank(
+                text,
+                self.tokenizer,
+                config_path=self.config_path,
+            )
+        else:
+            textrank_result = summarize_textrank(
+                text,
+                self.tokenizer,
+                config_path=self.config_path,
+                damping=self.textrank_config["damping"],
+                tolerance=self.textrank_config["tolerance"],
+                max_iterations=self.textrank_config["max_iterations"],
+            )
+            if textrank_result["textrank_config"] != self.textrank_config:
+                raise RuntimeError("Lỗi: Thuật toán TextRank hiện tại khác bản đã đánh giá.")
         vit5_result = summarize_text(
             text,
             self.model,
