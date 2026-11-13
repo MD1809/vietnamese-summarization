@@ -82,6 +82,7 @@ def summarize_text(
             do_sample=generation["do_sample"],
             num_beams=generation["num_beams"],
             max_new_tokens=generation["max_new_tokens"],
+            no_repeat_ngram_size=generation.get("no_repeat_ngram_size", 0),
         )
     if device.type == "cuda":
         torch.cuda.synchronize(device)

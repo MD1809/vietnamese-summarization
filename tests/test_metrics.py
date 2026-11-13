@@ -7,7 +7,23 @@ from src.metrics import (
     get_rouge_settings,
     score_summary,
     score_summaries,
+    measure_sentence_repetition,
 )
+
+
+class SentenceRepetitionTests(unittest.TestCase):
+    def test_counts_repeated_samples_and_extra_occurrences_after_normalization(self):
+        result = measure_sentence_repetition(["Tôi học. TÔI  học. Tôi học.", "Một câu. Câu khác.", ""])
+        self.assertEqual(result["sample_count"], 3)
+        self.assertEqual(result["repeated_sample_count"], 1)
+        self.assertEqual(result["repeated_sentence_count"], 2)
+        self.assertAlmostEqual(result["repeated_sample_percent"], 100 / 3)
+
+    def test_empty_list_and_invalid_inputs(self):
+        self.assertEqual(measure_sentence_repetition([])["repeated_sample_percent"], 0)
+        for predictions in ["Một câu.", [None]]:
+            with self.assertRaises(TypeError):
+                measure_sentence_repetition(predictions)
 
 
 class RougeTokenizerTests(unittest.TestCase):

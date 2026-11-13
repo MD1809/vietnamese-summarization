@@ -105,6 +105,11 @@ def load_generation_config(path="configs/generation.json"):
     _positive_integer(config, "max_new_tokens")
     if config.get("do_sample") is not False:
         raise ValueError("do_sample must be false for the planned greedy/beam comparison")
+    no_repeat_ngram_size = config.get("no_repeat_ngram_size", 0)
+    if type(no_repeat_ngram_size) is not int:
+        raise ValueError("Lỗi: no_repeat_ngram_size phải là số nguyên.")
+    if no_repeat_ngram_size < 0:
+        raise ValueError("Lỗi: no_repeat_ngram_size không được âm.")
     return config
 
 

@@ -1,7 +1,37 @@
+import re
+
 from src.preprocessing import normalize_text
 
 
 ROUGE_TYPES = ["rouge1", "rouge2", "rougeL"]
+
+
+def measure_sentence_repetition(predictions):
+    if not isinstance(predictions, (list, tuple)):
+        raise TypeError("Lỗi: Danh sách dự đoán phải là list hoặc tuple.")
+    repeated_sample_count = 0
+    repeated_sentence_count = 0
+    for prediction in predictions:
+        normalized = normalize_text(prediction).lower()
+        sentences = []
+        for part in re.split(r"(?<=[.!?])\s+", normalized):
+            sentence = part.strip()
+            if sentence != "":
+                sentences.append(sentence)
+        duplicate_count = len(sentences) - len(set(sentences))
+        if duplicate_count > 0:
+            repeated_sample_count = repeated_sample_count + 1
+            repeated_sentence_count = repeated_sentence_count + duplicate_count
+    percentage = 0.0
+    if len(predictions) > 0:
+        percentage = repeated_sample_count / len(predictions) * 100
+    return {
+        "sample_count": len(predictions),
+        "repeated_sample_count": repeated_sample_count,
+        "repeated_sample_percent": percentage,
+        "repeated_sentence_count": repeated_sentence_count,
+        "rule": "NFC, lowercase and whitespace normalization; exact sentences split after . ! ? followed by whitespace",
+    }
 
 
 class VietnameseRougeTokenizer:

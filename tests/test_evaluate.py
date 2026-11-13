@@ -192,6 +192,22 @@ class DecodingComparisonTests(unittest.TestCase):
             self.assertEqual(json.loads((output / "decoding_comparison.json").read_text()), report)
             self.assertEqual(len(json.loads((output / "decoding_examples.json").read_text())), 2)
 
+    def test_anti_repetition_config_is_preserved_for_both_decoding_candidates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.prepare(root)
+            generation = {"num_beams": 1, "max_new_tokens": 128, "do_sample": False, "no_repeat_ngram_size": 4}
+            with patch("src.evaluate.load_generation_config", return_value=generation):
+                report, generate = self.run_comparison(root)
+            for method in ["greedy", "beam"]:
+                candidate = report["candidates"][method]
+                self.assertEqual(candidate["generation_config"]["no_repeat_ngram_size"], 4)
+                self.assertEqual(candidate["sentence_repetition"]["sample_count"], 2)
+                self.assertEqual(candidate["sentence_repetition"]["repeated_sample_count"], 0)
+            for call in generate.call_args_list:
+                settings = json.loads(Path(call.kwargs["generation_config_path"]).read_text())
+                self.assertEqual(settings["no_repeat_ngram_size"], 4)
+
     def test_changed_source_ids_between_methods_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

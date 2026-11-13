@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from src.utils import load_generation_config
+from src.metrics import measure_sentence_repetition
 
 
 NOTEBOOK = Path(__file__).resolve().parent.parent / "notebooks" / "vietnamese_summarization_evaluation.ipynb"
@@ -105,6 +106,7 @@ class EvaluationNotebookTests(unittest.TestCase):
                 "input_token_count": 2, "used_input_token_count": 2, "was_truncated": False, "elapsed_seconds": 0.1,
             }),
             "score_summaries": scoring,
+            "measure_sentence_repetition": measure_sentence_repetition,
         }
         return namespace
 
@@ -121,6 +123,37 @@ class EvaluationNotebookTests(unittest.TestCase):
         self.assertFalse(namespace["evaluate_test"])
         self.assertNotIn("test_dir", namespace)
 
+    def test_setup_writes_no_repeat_trial_without_changing_run_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "outputs" / "new_run"
+            output.mkdir(parents=True)
+            config = {
+                "seed": 42, "max_source_length": 1024, "max_target_length": 128,
+                "paths": {"subset_manifest": "subset.json", "processed_manifest": "processed.json"},
+            }
+            original_generation = {"num_beams": 4, "max_new_tokens": 128, "do_sample": False}
+            profile = {
+                "run_id": "new_run", "train_config": config, "generation_config": original_generation.copy(),
+                "data": {"subset_manifest_sha256": "fingerprint"},
+            }
+            summary = {"best_epoch": 2, "best_validation_loss": 2.1}
+            for name in ["subset.json", "processed.json"]:
+                (root / name).write_text("{}", encoding="utf-8")
+                (output / name).write_text("{}", encoding="utf-8")
+            source = notebook_code()[3]
+            source = source.replace('Path("/content/vietnamese_summarization_evaluation")', "Path(" + repr(str(root / "runtime")) + ")", 1)
+            namespace = {"Path": Path, "drive_root": root, "repo_dir": root, "evaluation_run_id": ""}
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(patch.dict("sys.modules", {"torch": types.ModuleType("torch")}))
+                stack.enter_context(patch("app.demo_data.select_completed_run", return_value=(profile, summary, root / "checkpoint")))
+                stack.enter_context(patch("src.utils.load_train_config", return_value=config))
+                stack.enter_context(patch("src.tokenization.load_tokenization_source", return_value=(config, {"validation": [{"id": "v1"}]}, {}, "fingerprint")))
+                self.execute(source, namespace)
+            saved = json.loads(namespace["generation_path"].read_text(encoding="utf-8"))
+            self.assertEqual(saved["no_repeat_ngram_size"], 4)
+            self.assertEqual(profile["generation_config"], original_generation)
+
     def test_validation_adds_textrank_with_matching_sources_and_saves_zip(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -135,8 +168,8 @@ class EvaluationNotebookTests(unittest.TestCase):
                 "comparison_id": result_dir.name, "output_dir": str(result_dir),
                 "validation_sample_ids": ["v1", "v2"], "proposed_method": "beam",
                 "candidates": {
-                    "greedy": {"mean_f1_percent": {"rougeL": 20}},
-                    "beam": {"mean_f1_percent": {"rougeL": 21}},
+                    "greedy": {"mean_f1_percent": {"rougeL": 20}, "sentence_repetition": {"repeated_sample_count": 0}},
+                    "beam": {"mean_f1_percent": {"rougeL": 21}, "sentence_repetition": {"repeated_sample_count": 0}},
                 },
             }
             greedy = []

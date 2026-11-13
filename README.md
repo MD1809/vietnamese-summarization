@@ -36,6 +36,14 @@ Nếu ngắt phiên sau validation: điền đúng run ID và Comparison ID ở 
 
 Notebook train đã được người thực hiện rút gọn còn cell 1–10; các kiểm thử train và evaluation được tách theo đúng nhiệm vụ. Dùng notebook evaluation để đánh giá mới; validation loss chọn best vẫn được giữ trong vòng huấn luyện.
 
+## Thử chống lặp trên validation
+
+Notebook evaluation hiện thử `no_repeat_ngram_size=4` trong cell 4, ghi vào generation.json tạm và truyền thực sự tới model.generate. Giữ nguyên checkpoint và nguồn/đích 1024/128, không dùng repetition_penalty trong thử nghiệm đầu. Để so với mốc hiện tại, chọn run `vit5_finetuning_20261113_071230_169031`, chạy cell 1–5 trong phiên Colab T4 mới sau khi mã đã commit/push. Giữ evaluate_test=False ở cell 6; chưa chạy test hoặc đồng bộ demo bằng cấu hình thử khi chưa đọc kết quả validation. Muốn chạy lại mốc không chặn lặp, đổi giá trị ở cell 4 thành 0.
+
+Cell 5 đo cả ViT5 greedy/beam với chặn lặp và TextRank, lưu vào thư mục comparison mới. Mỗi candidate có sentence_repetition gồm số mẫu có câu lặp, tỷ lệ và tổng lần câu bị lặp thêm. Quy tắc đo: chuẩn hóa NFC/khoảng trắng/chữ thường rồi đếm câu trùng nguyên văn; không phát hiện mọi kiểu lặp ngữ nghĩa. Mốc cũ cùng run có 171/201 greedy và 186/201 beam bị lặp theo quy tắc này. So sánh greedy mới với greedy cũ, ROUGE và đọc ví dụ để kiểm tra đủ ý/đúng thông tin; đề xuất greedy/beam chỉ dựa ROUGE-L không thay thế nhận xét chất lượng.
+
+Báo cáo/checkpoint/hồ sơ cũ giữ nguyên, không đổi generation.json gốc trong configs. Cách sinh đã đổi source hash nên demo theo mã mới sẽ từ chối báo cáo cũ; chỉ chuyển demo sang cấu hình chống lặp sau khi chốt trên validation và lưu lượt đánh giá phù hợp. Nếu cần dùng demo cũ để đối chiếu, giữ phiên bản mã 6184d14 với báo cáo cũ. Không coi kiểm thử bằng mock là bằng chứng đã giảm lặp hoặc tăng chất lượng trên dữ liệu thật.
+
 ## Chạy demo từ phiên Colab mới
 
 1. Mở `notebooks/vietnamese_summarization_demo.ipynb` trong phiên Colab mới với T4 GPU. Notebook gồm sáu cell code, không cần upload mã hoặc tải file kết quả thủ công.

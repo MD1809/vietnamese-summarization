@@ -10,7 +10,7 @@ from pathlib import Path
 from src.baseline import summarize_lead_three
 from src.data import _prepared_file_path, _split_manifest_fingerprint
 from src.inference import load_summarizer, summarize_text
-from src.metrics import get_rouge_settings, score_summaries
+from src.metrics import get_rouge_settings, score_summaries, measure_sentence_repetition
 from src.tokenization import load_tokenization_source
 from src.utils import load_generation_config, load_train_config, set_seed
 
@@ -197,9 +197,11 @@ def run_decoding_comparison(
             "mean_inference_seconds": total_seconds / len(records),
             "truncated_source_count": truncated_count,
             "predictions_file": prediction_path.name,
+            "sentence_repetition": measure_sentence_repetition(predictions),
         }
         all_records[method] = records
         print(method, "ROUGE F1 x 100:", scores["mean_f1_percent"])
+        print(method, "Lặp câu:", candidates[method]["sentence_repetition"])
     proposed_method = choose_decoding(candidates)
     examples = []
     for index in range(min(3, len(rows))):
