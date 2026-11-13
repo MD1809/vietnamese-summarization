@@ -10,18 +10,79 @@ from app.demo_data import select_completed_run, load_validation_examples
 
 
 class DemoSummarizerTests(unittest.TestCase):
+    def test_comparison_reuses_model_tokenizer_and_configuration(self):
+        with patch("app.gradio_app.load_summarizer") as load:
+            with patch("app.gradio_app.summarize_textrank") as extract:
+                with patch("app.gradio_app.summarize_text") as generate:
+                    model = Mock()
+                    tokenizer = Mock()
+                    load.return_value = (model, tokenizer, {})
+                    extract.return_value = {
+                        "summary": "extracted", "used_input_ids": [2, 3, 1],
+                        "summary_was_truncated": False, "converged": True,
+                    }
+                    generate.return_value = {
+                        "summary": "generated", "used_input_ids": [2, 3, 1], "was_truncated": False,
+                    }
+                    handler = DemoSummarizer("run", "/runtime/train.json", "/runtime/generation.json")
+                    for text in ["source one", "source two"]:
+                        self.assertEqual(handler.compare(text), ("extracted", "generated", ""))
+                    load.assert_called_once()
+                    for index, text in enumerate(["source one", "source two"]):
+                        self.assertEqual(extract.call_args_list[index], call(
+                            text, tokenizer, config_path="/runtime/train.json",
+                        ))
+                        self.assertEqual(generate.call_args_list[index], call(
+                            text, model, tokenizer, config_path="/runtime/train.json",
+                            generation_config_path="/runtime/generation.json",
+                        ))
+
+    def test_comparison_blank_input_clears_both_without_running_algorithms(self):
+        with patch("app.gradio_app.load_summarizer", return_value=(Mock(), Mock(), {})):
+            with patch("app.gradio_app.summarize_textrank") as extract:
+                with patch("app.gradio_app.summarize_text") as generate:
+                    handler = DemoSummarizer("run")
+                    for text in [None, "", " \n\t "]:
+                        self.assertEqual(handler.compare(text), ("", "", "Vui lòng nhập văn bản cần tóm tắt."))
+                    extract.assert_not_called()
+                    generate.assert_not_called()
+
+    def test_comparison_rejects_different_source_tokens(self):
+        with patch("app.gradio_app.load_summarizer", return_value=(Mock(), Mock(), {})):
+            with patch("app.gradio_app.summarize_textrank", return_value={"used_input_ids": [2, 1]}):
+                with patch("app.gradio_app.summarize_text", return_value={"used_input_ids": [3, 1]}):
+                    handler = DemoSummarizer("run")
+                    with self.assertRaisesRegex(RuntimeError, "TextRank"):
+                        handler.compare("source")
+
+    def test_comparison_discloses_source_cut_sentence_cut_and_nonconvergence(self):
+        with patch("app.gradio_app.load_summarizer", return_value=(Mock(), Mock(), {})):
+            with patch("app.gradio_app.summarize_textrank", return_value={
+                "summary": "extracted", "used_input_ids": [2, 1], "summary_was_truncated": True,
+                "max_summary_tokens": 128, "converged": False,
+            }):
+                with patch("app.gradio_app.summarize_text", return_value={
+                    "summary": "generated", "used_input_ids": [2, 1], "was_truncated": True,
+                    "input_token_count": 1500, "used_input_token_count": 1024, "max_source_length": 1024,
+                }):
+                    handler = DemoSummarizer("run")
+                    first, second, notice = handler.compare("source")
+                    self.assertEqual((first, second), ("extracted", "generated"))
+                    for expected in ["1500 token", "1024 token đầu", "128 token", "trước khi hội tụ"]:
+                        self.assertIn(expected, notice)
+
     def test_reference_is_only_returned_for_exact_selected_document(self):
         summarizer = Mock()
-        summarizer.summarize.return_value = ("generated", "")
+        summarizer.compare.return_value = ("extracted", "generated", "")
         handler = DemoExamples(summarizer, [{"id": "v1", "document": "source", "summary": "reference"}])
-        self.assertEqual(handler.select("v1")[:3], ("source", "reference", ""))
-        self.assertEqual(handler.summarize("source", "v1"), ("reference", "generated", ""))
+        self.assertEqual(handler.select("v1")[:4], ("source", "reference", "", ""))
+        self.assertEqual(handler.summarize("source", "v1"), ("reference", "extracted", "generated", ""))
         for text, identifier in [("edited", "v1"), ("source", ""), ("source", "unknown")]:
             result = handler.summarize(text, identifier)
-            self.assertEqual(result[:2], ("", "generated"))
-        self.assertEqual(handler.edit()[:2], ("", ""))
-        self.assertEqual(handler.select("")[:3], ("", "", ""))
-        for request in summarizer.summarize.call_args_list:
+            self.assertEqual(result[:3], ("", "extracted", "generated"))
+        self.assertEqual(handler.edit()[:3], ("", "", ""))
+        self.assertEqual(handler.select("")[:4], ("", "", "", ""))
+        for request in summarizer.compare.call_args_list:
             self.assertEqual(len(request.args), 1)
             self.assertNotIn("reference", request.args)
 

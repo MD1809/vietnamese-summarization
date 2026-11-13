@@ -1,5 +1,18 @@
 from src.inference import load_summarizer, summarize_text
 from src.preprocessing import normalize_text
+from src.textRank import summarize_textrank
+
+
+def source_notice(result):
+    if not result["was_truncated"]:
+        return ""
+    message = (
+        "Văn bản có " + str(result["input_token_count"]) + " token. "
+        "Chỉ sử dụng " + str(result["used_input_token_count"])
+        + " token đầu (giới hạn " + str(result["max_source_length"])
+        + " token). Phần còn lại không được dùng để tóm tắt."
+    )
+    return message
 
 
 class DemoSummarizer:
@@ -59,15 +72,42 @@ class DemoSummarizer:
             config_path=self.config_path,
             generation_config_path=self.generation_config_path,
         )
-        message = ""
-        if result["was_truncated"]:
-            message = (
-                "Văn bản có " + str(result["input_token_count"]) + " token. "
-                "Chỉ sử dụng " + str(result["used_input_token_count"])
-                + " token đầu (giới hạn " + str(result["max_source_length"])
-                + " token). Phần còn lại không được dùng để tóm tắt."
-            )
+        message = source_notice(result)
         return result["summary"], message
+
+    def compare(self, text):
+        if text is None:
+            return "", "", "Vui lòng nhập văn bản cần tóm tắt."
+        if normalize_text(text) == "":
+            return "", "", "Vui lòng nhập văn bản cần tóm tắt."
+        textrank_result = summarize_textrank(
+            text,
+            self.tokenizer,
+            config_path=self.config_path,
+        )
+        vit5_result = summarize_text(
+            text,
+            self.model,
+            self.tokenizer,
+            config_path=self.config_path,
+            generation_config_path=self.generation_config_path,
+        )
+        if textrank_result["used_input_ids"] != vit5_result["used_input_ids"]:
+            raise RuntimeError("Lỗi: TextRank và ViT5 không dùng cùng phần nguồn.")
+        notices = []
+        message = source_notice(vit5_result)
+        if message != "":
+            notices.append(message)
+        if textrank_result["summary_was_truncated"]:
+            notices.append(
+                "TextRank không có câu nguyên vẹn nào vừa giới hạn "
+                + str(textrank_result["max_summary_tokens"])
+                + " token; kết quả là phần đầu của câu được xếp hạng cao nhất."
+            )
+        if not textrank_result["converged"]:
+            notices.append("TextRank đã đạt giới hạn vòng lặp trước khi hội tụ.")
+        message = "\n".join(notices)
+        return textrank_result["summary"], vit5_result["summary"], message
 
 
 class DemoExamples:
@@ -81,25 +121,25 @@ class DemoExamples:
 
     def select(self, example_id):
         if example_id not in self.examples:
-            return "", "", "", "Không có bản tóm tắt tham chiếu cho văn bản tự nhập."
+            return "", "", "", "", "Không có bản tóm tắt tham chiếu cho văn bản tự nhập."
         example = self.examples[example_id]
-        return example["document"], example["summary"], "", "Mẫu từ tập validation WikiLingua tiếng Việt."
+        return example["document"], example["summary"], "", "", "Mẫu từ tập validation WikiLingua tiếng Việt."
 
     def edit(self):
-        return "", "", "Văn bản đã sửa. Bản tham chiếu chỉ áp dụng khi nội dung khớp mẫu đã chọn."
+        return "", "", "", "Văn bản đã sửa. Bản tham chiếu chỉ áp dụng khi nội dung khớp mẫu đã chọn."
 
     def summarize(self, text, example_id):
         reference = ""
         example = self.examples.get(example_id)
         if example is not None and text == example["document"]:
             reference = example["summary"]
-        summary, message = self.summarizer.summarize(text)
+        textrank_summary, vit5_summary, message = self.summarizer.compare(text)
         if reference == "":
             notice = "Không có bản tóm tắt tham chiếu cho văn bản tự nhập."
             if message != "":
                 notice = message + "\n" + notice
             message = notice
-        return reference, summary, message
+        return reference, textrank_summary, vit5_summary, message
 
 
 def create_demo(summarizer, examples=None, run_id=""):
@@ -118,20 +158,29 @@ def create_demo(summarizer, examples=None, run_id=""):
             gr.Markdown("Model fine-tune: `" + run_id + "` · checkpoint **best**")
         choice = gr.Dropdown(label="Chọn mẫu validation hoặc văn bản tự nhập", choices=handler.choices, value="")
         source = gr.Textbox(label="Văn bản cần tóm tắt", lines=10)
-        submit = gr.Button("Tóm tắt", variant="primary")
+        submit = gr.Button("Tóm tắt văn bản", variant="primary")
         with gr.Row():
-            reference = gr.Textbox(label="Bản tóm tắt tham chiếu — WikiLingua", lines=6, interactive=False)
-            summary = gr.Textbox(label="Bản tóm tắt do ViT5 sinh", lines=6, interactive=False)
+            textrank_summary = gr.Textbox(label="TextRank — tóm tắt trích xuất", lines=6, interactive=False)
+            vit5_summary = gr.Textbox(label="ViT5 — tóm tắt sinh văn bản", lines=6, interactive=False)
+        reference = gr.Textbox(label="Bản tóm tắt tham chiếu — WikiLingua", lines=5, interactive=False)
         message = gr.Textbox(
             label="Thông báo", lines=2, interactive=False,
             value="Không có bản tóm tắt tham chiếu cho văn bản tự nhập.",
         )
-        choice.change(fn=handler.select, inputs=choice, outputs=[source, reference, summary, message])
-        source.input(fn=handler.edit, inputs=None, outputs=[reference, summary, message])
+        choice.change(
+            fn=handler.select,
+            inputs=choice,
+            outputs=[source, reference, textrank_summary, vit5_summary, message],
+        )
+        source.input(
+            fn=handler.edit,
+            inputs=None,
+            outputs=[reference, textrank_summary, vit5_summary, message],
+        )
         submit.click(
             fn=handler.summarize,
             inputs=[source, choice],
-            outputs=[reference, summary, message],
+            outputs=[reference, textrank_summary, vit5_summary, message],
             concurrency_limit=1,
         )
     demo.queue(default_concurrency_limit=1)
