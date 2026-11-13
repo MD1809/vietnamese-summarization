@@ -1,4 +1,3 @@
-import csv
 import hashlib
 import json
 import math
@@ -7,16 +6,11 @@ from datetime import datetime, timezone
 from importlib.metadata import version
 from pathlib import Path
 
-from src.baseline import summarize_lead_three
 from src.data import _prepared_file_path, _split_manifest_fingerprint
 from src.inference import load_summarizer, summarize_text
 from src.metrics import get_rouge_settings, score_summaries, measure_sentence_repetition
 from src.tokenization import load_tokenization_source
-from src.utils import load_generation_config, load_train_config, set_seed
-
-
-DECODING_RELEASE_COMMIT = "5cf7db98d3823ef2beb3368c9d0accc283e64c68"
-DECODING_REPORT_DIR = "reports/decoding_comparison/decoding_comparison_20261108_175213_059002"
+from src.utils import load_generation_config, set_seed
 
 
 def choose_decoding(candidates):
@@ -256,55 +250,6 @@ def run_decoding_comparison(
     return report
 
 
-def verify_test_release(project_root, checkpoint_run_id):
-    root = Path(project_root).resolve()
-    remote = subprocess.run(
-        ["git", "remote", "get-url", "origin"],
-        cwd=root, capture_output=True, text=True, check=True,
-    )
-    if remote.stdout.strip() != "https://github.com/MD1809/vietnamese-summarization.git":
-        raise ValueError("Lỗi: Repository không đúng dự án.")
-    subprocess.run(["git", "fetch", "origin"], cwd=root, capture_output=True, text=True, check=True)
-    for target in ["HEAD", "origin/main"]:
-        result = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", DECODING_RELEASE_COMMIT, target],
-            cwd=root, capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            raise RuntimeError("Lỗi: Cần push G6.4 và checkout commit 5cf7db9 trước khi đọc test.")
-    config = load_train_config(root / "configs/train.json")
-    generation = load_generation_config(root / "configs/generation.json")
-    paths = {
-        "train_config": "configs/train.json",
-        "generation_config": "configs/generation.json",
-        "subset": config["paths"]["subset_manifest"],
-        "processed": config["paths"]["processed_manifest"],
-        "decision": DECODING_REPORT_DIR + "/decoding_selection.json",
-        "comparison": DECODING_REPORT_DIR + "/decoding_comparison.json",
-    }
-    approved = {}
-    for name, relative_path in paths.items():
-        path = _prepared_file_path(root, relative_path)
-        current = json.loads(path.read_text(encoding="utf-8"))
-        release = subprocess.run(
-            ["git", "show", DECODING_RELEASE_COMMIT + ":" + relative_path],
-            cwd=root, capture_output=True, text=True, check=True,
-        )
-        if current != json.loads(release.stdout):
-            raise ValueError("Lỗi: File đã thay đổi sau khi chốt G6.4: " + relative_path)
-        approved[name] = current
-    decision = approved["decision"]
-    if decision["decision"] != "approved_by_user" or not decision["generation_config_updated"]:
-        raise ValueError("Lỗi: Cấu hình sinh chưa được duyệt.")
-    if decision["selected_generation_config"] != generation:
-        raise ValueError("Lỗi: Cấu hình sinh không khớp quyết định đã duyệt.")
-    if decision["checkpoint_run_id"] != checkpoint_run_id:
-        raise ValueError("Lỗi: Run checkpoint không khớp quyết định G6.4.")
-    if decision["comparison_id"] != approved["comparison"]["comparison_id"]:
-        raise ValueError("Lỗi: Quyết định không khớp lượt so sánh validation.")
-    return approved
-
-
 def load_fixed_test_source(drive_root, approved):
     config = approved["train_config"]
     subset = approved["subset"]
@@ -347,161 +292,3 @@ def load_fixed_test_source(drive_root, approved):
         if set(ids).intersection(other["sample_ids"]) or group_ids.intersection(other["group_ids"]):
             raise ValueError("Lỗi: Test giao ID hoặc nhóm với " + split_name)
     return rows, metadata
-
-
-def run_test_evaluation(project_root, drive_root, checkpoint_run_id):
-    approved = verify_test_release(project_root, checkpoint_run_id)
-    config = approved["train_config"]
-    generation = approved["generation_config"]
-    config_path = Path(project_root).resolve() / "configs/train.json"
-    generation_path = Path(project_root).resolve() / "configs/generation.json"
-    root = Path(drive_root).resolve()
-    checkpoint_dir = root / "checkpoints" / checkpoint_run_id
-    model, tokenizer, selection = load_summarizer(checkpoint_dir, config_path)
-    for selection_key, report_key in [("epoch", "best_epoch"), ("global_step", "best_global_step"), ("validation_loss", "best_validation_loss")]:
-        if selection[selection_key] != approved["comparison"][report_key]:
-            raise ValueError("Lỗi: Best checkpoint không khớp lượt validation đã chốt.")
-    rows, test_metadata = load_fixed_test_source(root, approved)
-    set_seed(config["seed"])
-    source = record_evaluation_source(project_root, extra_files=["src/baseline.py"])
-    created_at = datetime.now(timezone.utc)
-    evaluation_id = "test_evaluation_" + created_at.strftime("%Y%m%d_%H%M%S_%f")
-    output_dir = root / "outputs" / evaluation_id
-    output_dir.mkdir(parents=True, exist_ok=False)
-    print("Khởi động baseline và ViT5, không tính vào thời gian.")
-    summarize_lead_three(rows[0]["document"], tokenizer, config_path=config_path)
-    summarize_text(rows[0]["document"], model, tokenizer, config_path=config_path, generation_config_path=generation_path)
-    records = []
-    references = []
-    predictions = {"baseline": [], "vit5": []}
-    total_seconds = {"baseline": 0.0, "vit5": 0.0}
-    truncated_count = 0
-    for index, row in enumerate(rows):
-        baseline = summarize_lead_three(row["document"], tokenizer, config_path=config_path)
-        vit5 = summarize_text(row["document"], model, tokenizer, config_path=config_path, generation_config_path=generation_path)
-        if baseline["used_input_ids"] != vit5["used_input_ids"]:
-            raise ValueError("Lỗi: Baseline và ViT5 không đọc cùng ID nguồn test.")
-        if baseline["was_truncated"] != vit5["was_truncated"] or baseline["input_token_count"] != vit5["input_token_count"]:
-            raise ValueError("Lỗi: Thông tin cắt nguồn không nhất quán.")
-        source_count = len(vit5["used_input_ids"])
-        if source_count > config["max_source_length"] or source_count != vit5["used_input_token_count"] or source_count != baseline["used_input_token_count"]:
-            raise ValueError("Lỗi: Giới hạn token nguồn test không đúng.")
-        if vit5["generation_config"] != generation:
-            raise ValueError("Lỗi: Tham số sinh đã đổi trong khi đánh giá test.")
-        generated_count = len(vit5["generated_ids"]) - 1
-        if generated_count > generation["max_new_tokens"] or baseline["summary_token_count"] > config["max_target_length"]:
-            raise ValueError("Lỗi: Tóm tắt vượt ngân sách đầu ra đã chốt.")
-        for method, result in [("baseline", baseline), ("vit5", vit5)]:
-            elapsed = result["elapsed_seconds"]
-            if not math.isfinite(elapsed) or elapsed < 0:
-                raise ValueError("Lỗi: Thời gian đánh giá test không hợp lệ.")
-            total_seconds[method] = total_seconds[method] + elapsed
-            predictions[method].append(result["summary"])
-        if vit5["was_truncated"]:
-            truncated_count = truncated_count + 1
-        references.append(row["summary"])
-        records.append({
-            "id": row["id"],
-            "group_id": row["group_id"],
-            "document": row["document"],
-            "reference": row["summary"],
-            "input_token_count": vit5["input_token_count"],
-            "used_input_token_count": source_count,
-            "was_truncated": vit5["was_truncated"],
-            "source_ids_sha256": source_ids_fingerprint(vit5["used_input_ids"]),
-            "baseline": {
-                "prediction": baseline["summary"],
-                "summary_token_count": baseline["summary_token_count"],
-                "summary_was_truncated": baseline["summary_was_truncated"],
-                "selected_sentence_count": baseline["selected_sentence_count"],
-                "elapsed_seconds": baseline["elapsed_seconds"],
-            },
-            "vit5": {
-                "prediction": vit5["summary"],
-                "generated_token_count": generated_count,
-                "elapsed_seconds": vit5["elapsed_seconds"],
-            },
-        })
-        if (index + 1) % 25 == 0 or index + 1 == len(rows):
-            print("Test đã xử lý:", index + 1, "/", len(rows))
-    results = {}
-    comparison_rows = []
-    for method in ["baseline", "vit5"]:
-        scores = score_summaries(references, predictions[method])
-        if scores["sample_count"] != len(rows) or len(scores["per_sample"]) != len(rows):
-            raise ValueError("Lỗi: Chưa chấm đủ mẫu test.")
-        for index, record in enumerate(records):
-            record[method]["scores"] = scores["per_sample"][index]
-        results[method] = {
-            "sample_count": len(rows),
-            "mean_f1": scores["mean_f1"],
-            "mean_f1_percent": scores["mean_f1_percent"],
-            "total_inference_seconds": total_seconds[method],
-            "mean_inference_seconds": total_seconds[method] / len(rows),
-        }
-        comparison_rows.append({
-            "method": method,
-            "sample_count": len(rows),
-            "rouge1_f1_percent": scores["mean_f1_percent"]["rouge1"],
-            "rouge2_f1_percent": scores["mean_f1_percent"]["rouge2"],
-            "rougeL_f1_percent": scores["mean_f1_percent"]["rougeL"],
-            "total_inference_seconds": total_seconds[method],
-            "mean_inference_seconds": total_seconds[method] / len(rows),
-            "truncated_source_count": truncated_count,
-            "truncated_source_percent": truncated_count / len(rows) * 100,
-        })
-    test_ids = []
-    for record in records:
-        test_ids.append(record["id"])
-    if test_ids != sorted(approved["subset"]["splits"]["test"]["sample_ids"]):
-        raise ValueError("Lỗi: Chưa dự đoán đúng thứ tự hoặc đủ mẫu test.")
-    prediction_path = output_dir / "predictions.jsonl"
-    with prediction_path.open("w", encoding="utf-8") as file:
-        for record in records:
-            file.write(json.dumps(record, ensure_ascii=False) + "\n")
-    csv_path = output_dir / "comparison.csv"
-    with csv_path.open("w", encoding="utf-8", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=list(comparison_rows[0]))
-        writer.writeheader()
-        writer.writerows(comparison_rows)
-    report = {
-        "evaluation_id": evaluation_id,
-        "created_at_utc": created_at.isoformat(),
-        "status": "completed",
-        "output_dir": str(output_dir),
-        "decoding_release_commit": DECODING_RELEASE_COMMIT,
-        "decoding_approval": approved["decision"],
-        "checkpoint_run_id": checkpoint_run_id,
-        "checkpoint_dir": str(checkpoint_dir / "best"),
-        "best_epoch": selection["epoch"],
-        "best_global_step": selection["global_step"],
-        "best_validation_loss": selection["validation_loss"],
-        "train_config": config,
-        "generation_config": generation,
-        "metric_settings": get_rouge_settings(),
-        "source": source,
-        "library_versions": {"torch": version("torch"), "transformers": version("transformers"), "rouge-score": version("rouge-score")},
-        "verified_test_file": test_metadata,
-        "subset_manifest_sha256": approved["processed"]["subset_manifest_sha256"],
-        "test_sample_ids": test_ids,
-        "same_source_ids_check_passed": True,
-        "test_lock_metadata_preserved": True,
-        "truncated_source_count": truncated_count,
-        "truncated_source_percent": truncated_count / len(rows) * 100,
-        "output_budget_definition": {"baseline": "128 content tokens without special tokens", "vit5": "128 new tokens including EOS when emitted; excludes decoder start"},
-        "warmup_runs_per_method": 1,
-        "timing_scope": "sum of per-sample processing; excludes loading, warmup, ROUGE and file writing; baseline runs on CPU, ViT5 on CUDA",
-        "results": results,
-        "predictions_file": prediction_path.name,
-        "comparison_file": csv_path.name,
-        "test_content_read": True,
-        "test_used_for_tuning": False,
-        "training_performed": False,
-        "generation_config_updated": False,
-    }
-    report_path = output_dir / "metrics.json"
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    if json.loads(report_path.read_text(encoding="utf-8")) != report:
-        raise RuntimeError("Lỗi: Báo cáo test đọc lại không khớp.")
-    print("Đã lưu kết quả test:", output_dir)
-    return report

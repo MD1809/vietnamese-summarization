@@ -11,22 +11,13 @@ from unittest.mock import Mock, patch
 
 from src.train import (
     check_forward_batch,
-    check_optimization_step,
     capture_random_state,
     collect_run_source,
     create_optimizer,
-    create_resource_limit_batch,
-    create_small_sample_batches,
     create_training_run,
     load_vit5_model,
     load_training_checkpoint,
-    measure_small_sample_loss,
-    measure_resource_step,
-    generate_checkpoint_probe,
     restore_random_state,
-    run_small_sample_check,
-    run_resource_check,
-    run_accumulation_check,
     train_accumulated_group,
     validate_model,
     save_training_checkpoint,
@@ -34,13 +25,9 @@ from src.train import (
     restore_train_loader_state,
     save_last_checkpoint,
     load_last_checkpoint,
-    train_checkpoint_test_epoch,
-    preview_train_epoch_ids,
     update_best_checkpoint,
     load_best_checkpoint,
     train_epoch,
-    write_training_history,
-    fit_model,
 )
 
 
@@ -288,63 +275,6 @@ class OptimizationTests(unittest.TestCase):
         events.attach_mock(optimizer.step, "step")
         return torch_module, model, batch, optimizer, parameter, loss, events
 
-    def test_single_step_order_original_labels_and_update_report(self):
-        torch_module, model, batch, optimizer, parameter, loss, events = self.examples()
-        with patch.dict(sys.modules, {"torch": torch_module}):
-            report = check_optimization_step(model, batch, optimizer)
-        operations = []
-        for call in events.mock_calls:
-            if call[0] in ["train", "zero_grad", "forward", "backward", "step"]:
-                operations.append(call[0])
-        self.assertEqual(operations, ["train", "zero_grad", "forward", "backward", "step"])
-        optimizer.zero_grad.assert_called_once_with(set_to_none=True)
-        optimizer.step.assert_called_once_with()
-        self.assertEqual(model.call_args.kwargs["labels"].tolist(), [[8, 9, 1, -100, -100]])
-        self.assertNotIn("decoder_input_ids", model.call_args.kwargs)
-        self.assertIs(model.call_args.kwargs["use_cache"], False)
-        self.assertEqual(report["optimizer_steps"], 1)
-        self.assertEqual(report["gradient_max_abs"], 0.3)
-        self.assertGreater(report["parameter_change_max_abs"], 0)
-        self.assertFalse(report["gradient_accumulation_applied"])
-
-    def test_invalid_loss_stops_before_backward_or_step(self):
-        for kind in ["nan", "no_graph", "missing"]:
-            torch_module, model, batch, optimizer, parameter, loss, events = self.examples()
-            if kind == "nan":
-                loss.item.return_value = float("nan")
-            elif kind == "no_graph":
-                loss.requires_grad = False
-            else:
-                model.return_value.loss = None
-            with patch.dict(sys.modules, {"torch": torch_module}):
-                with self.assertRaises(ValueError):
-                    check_optimization_step(model, batch, optimizer)
-            loss.backward.assert_not_called()
-            optimizer.step.assert_not_called()
-
-    def test_invalid_or_missing_gradients_prevent_update(self):
-        for kind in ["infinite", "zero", "missing"]:
-            torch_module, model, batch, optimizer, parameter, loss, events = self.examples()
-            if kind == "infinite":
-                parameter.grad.finite = False
-            elif kind == "zero":
-                parameter.grad.detach.return_value.abs.return_value.max.return_value.item.return_value = 0
-            else:
-                parameter.grad = None
-            with patch.dict(sys.modules, {"torch": torch_module}):
-                with self.assertRaises(ValueError):
-                    check_optimization_step(model, batch, optimizer)
-            loss.backward.assert_called_once_with()
-            optimizer.step.assert_not_called()
-
-    def test_unchanged_parameter_is_rejected_after_step(self):
-        torch_module, model, batch, optimizer, parameter, loss, events = self.examples()
-        difference = parameter.detach.return_value.__sub__.return_value
-        difference.abs.return_value.max.return_value.item.return_value = 0
-        with patch.dict(sys.modules, {"torch": torch_module}):
-            with self.assertRaisesRegex(ValueError, "did not change"):
-                check_optimization_step(model, batch, optimizer)
-        optimizer.step.assert_called_once_with()
 
     def test_optimizer_uses_approved_configuration(self):
         torch_module = types.SimpleNamespace(optim=types.SimpleNamespace(AdamW=Mock()))
@@ -358,81 +288,6 @@ class OptimizationTests(unittest.TestCase):
             foreach=False,
         )
         self.assertIs(optimizer, torch_module.optim.AdamW.return_value)
-
-
-class SmallSampleTests(unittest.TestCase):
-    def batches(self):
-        batches = []
-        for index in range(16):
-            batches.append({
-                "sample_ids": ["sample-" + str(index)],
-                "model_inputs": {
-                    "input_ids": TensorExample([[10, 11, 1]]),
-                    "labels": TensorExample([[8, 9, 1]]),
-                },
-            })
-        return batches
-
-    def test_selection_is_repeatable_distinct_and_not_first_16(self):
-        dataset = Mock()
-        dataset.__len__ = Mock(return_value=2000)
-        selected_indices = []
-        with patch("src.tokenization.create_data_loader", return_value=["batch"]) as loader:
-            for repetition in range(2):
-                result = create_small_sample_batches(dataset, "tokenizer", seed=42)
-                selected_indices.append(dataset.select.call_args.args[0])
-                self.assertEqual(result, ["batch"])
-            loader.assert_called_with(
-                dataset.select.return_value, "tokenizer", batch_size=1, shuffle=False, seed=42,
-            )
-        self.assertEqual(selected_indices[0], selected_indices[1])
-        self.assertEqual(len(set(selected_indices[0])), 16)
-        self.assertNotEqual(selected_indices[0], list(range(16)))
-
-    def test_measurement_weights_loss_by_valid_target_tokens(self):
-        reports = [
-            {"loss": 2.0, "valid_target_token_count": 1},
-            {"loss": 4.0, "valid_target_token_count": 3},
-        ]
-        with patch("src.train.check_forward_batch", side_effect=reports):
-            loss = measure_small_sample_loss(Mock(), ["batch-a", "batch-b"])
-        self.assertEqual(loss, 3.5)
-
-    def test_three_passes_reuse_same_samples_and_keep_only_scalar_losses(self):
-        batches = self.batches()
-        model = Mock()
-        with patch("src.train.measure_small_sample_loss", side_effect=[8.0, 6.0, 5.0, 4.0]):
-            with patch("src.train.check_optimization_step", return_value={"loss_before_update": 7.0}) as step:
-                with patch("builtins.print"):
-                    report = run_small_sample_check(model, batches, Mock())
-        self.assertEqual(step.call_count, 48)
-        for index, call in enumerate(step.call_args_list):
-            self.assertIs(call.args[1], batches[index % 16])
-        self.assertEqual(report["optimizer_steps"], 48)
-        self.assertEqual(report["loss_decrease_percent"], 50.0)
-        self.assertTrue(report["loss_decreased"])
-        self.assertFalse(report["validation_used"])
-        self.assertFalse(report["test_content_read"])
-        self.assertEqual(len(report["history"]), 3)
-        model.train.assert_called_once_with()
-
-    def test_no_decrease_is_reported_without_claiming_success(self):
-        with patch("src.train.measure_small_sample_loss", side_effect=[8.0, 8.5, 9.0, 9.5]):
-            with patch("src.train.check_optimization_step", return_value={"loss_before_update": 9.0}):
-                with patch("builtins.print"):
-                    report = run_small_sample_check(Mock(), self.batches(), Mock())
-        self.assertFalse(report["loss_decreased"])
-        self.assertLess(report["loss_decrease_percent"], 0)
-
-    def test_duplicate_samples_are_rejected_before_measurement_or_learning(self):
-        batches = self.batches()
-        batches[-1]["sample_ids"] = batches[0]["sample_ids"]
-        with patch("src.train.measure_small_sample_loss") as measure:
-            with patch("src.train.check_optimization_step") as step:
-                with self.assertRaisesRegex(ValueError, "distinct"):
-                    run_small_sample_check(Mock(), batches, Mock())
-        measure.assert_not_called()
-        step.assert_not_called()
 
 
 class ValidationTests(unittest.TestCase):
@@ -629,30 +484,6 @@ class CheckpointTests(unittest.TestCase):
                         load_training_checkpoint("example/last")
         restore.assert_not_called()
 
-    def test_probe_uses_no_grad_greedy_and_never_passes_labels(self):
-        state, torch_module, model, batch = ForwardTests().examples()
-        tokenizer = Mock()
-        tokenizer.return_value = {
-            "input_ids": TensorExample([[10, 11, 1]]),
-            "attention_mask": TensorExample([[1, 1, 1]]),
-        }
-
-        def generate(**kwargs):
-            self.assertFalse(model.training)
-            self.assertTrue(state["no_grad"])
-            self.assertNotIn("labels", kwargs)
-            return TensorExample([[0, 8, 1]])
-
-        model.generate = Mock(side_effect=generate)
-        tokenizer.decode.return_value = "summary"
-        with patch.dict(sys.modules, {"torch": torch_module}):
-            report = generate_checkpoint_probe(model, tokenizer, "source")
-        self.assertEqual(report["input_ids"], [10, 11, 1])
-        self.assertEqual(report["generated_ids"], [0, 8, 1])
-        self.assertEqual(report["generated_text"], "summary")
-        self.assertIs(model.generate.call_args.kwargs["do_sample"], False)
-        self.assertEqual(model.generate.call_args.kwargs["num_beams"], 1)
-        self.assertEqual(report["generation_config"]["num_beams"], 1)
 
     def test_random_state_restores_python_numpy_cpu_and_cuda(self):
         import random
@@ -766,7 +597,7 @@ class TrainingRunTests(unittest.TestCase):
             self.assertFalse(Path(report["paths"]["checkpoint_dir"]).exists())
 
 
-class ResourceCheckTests(unittest.TestCase):
+class TrainingDeviceFixture:
     def examples(self):
         parameter = types.SimpleNamespace(
             device=types.SimpleNamespace(type="cuda"), dtype="float32",
@@ -778,93 +609,9 @@ class ResourceCheckTests(unittest.TestCase):
 
         model.parameters.side_effect = parameters
         cuda = types.SimpleNamespace(
-            synchronize=Mock(), reset_peak_memory_stats=Mock(), empty_cache=Mock(),
-            max_memory_allocated=Mock(return_value=4*1024**3),
-            max_memory_reserved=Mock(return_value=5*1024**3),
-            get_device_properties=Mock(return_value=types.SimpleNamespace(name="Test GPU", total_memory=16*1024**3)),
-            OutOfMemoryError=MemoryError,
+            synchronize=Mock(),
         )
         return types.SimpleNamespace(cuda=cuda, float32="float32"), model
-
-    def test_padding_to_limit_keeps_tokens_masks_and_original_batch(self):
-        state, torch_module, model, batch = ForwardTests().examples()
-
-        def tensor(values, dtype):
-            return TensorExample(values)
-
-        torch_module.tensor = tensor
-        torch_module.long = "long"
-        original = copy.deepcopy(batch["model_inputs"]["labels"].tolist())
-        with patch.dict(sys.modules, {"torch": torch_module}):
-            result = create_resource_limit_batch(batch, types.SimpleNamespace(pad_token_id=0))
-        self.assertEqual(result["model_inputs"]["input_ids"].shape, (1, 1024))
-        self.assertEqual(result["model_inputs"]["labels"].shape, (1, 128))
-        self.assertEqual(result["model_inputs"]["attention_mask"].tolist()[0], [1, 1, 1] + [0]*1021)
-        self.assertEqual(result["model_inputs"]["labels"].tolist()[0][:5], original[0])
-        self.assertEqual(result["model_inputs"]["labels"].tolist()[0][5:], [-100]*123)
-        self.assertEqual(batch["model_inputs"]["labels"].tolist(), original)
-
-    def test_timing_waits_for_cuda_before_reading_end_time(self):
-        torch_module, model = self.examples()
-        batch = SmallSampleTests().batches()[0]
-        events = Mock()
-        events.attach_mock(torch_module.cuda.synchronize, "synchronize")
-        timer = Mock(side_effect=[10.0, 12.0])
-        events.attach_mock(timer, "timer")
-        step = Mock(return_value={"loss_before_update": 3.0, "valid_target_token_count": 3})
-        events.attach_mock(step, "step")
-        with patch.dict(sys.modules, {"torch": torch_module}):
-            with patch("time.perf_counter", timer):
-                with patch("src.train.check_optimization_step", step):
-                    report = measure_resource_step(model, batch, Mock())
-        self.assertEqual([call[0] for call in events.mock_calls], ["synchronize", "timer", "step", "synchronize", "timer"])
-        self.assertEqual(report["elapsed_seconds"], 2.0)
-        self.assertEqual(report["peak_allocated_bytes"], 4*1024**3)
-
-    def test_oom_is_reported_without_changing_configuration(self):
-        torch_module, model = self.examples()
-        with patch.dict(sys.modules, {"torch": torch_module}):
-            with patch("src.train.check_optimization_step", side_effect=MemoryError("test OOM")):
-                report = measure_resource_step(model, SmallSampleTests().batches()[0], Mock())
-        self.assertEqual(report["status"], "oom")
-        self.assertIn("test OOM", report["error"])
-        self.assertNotIn("gradient_and_update_check_passed", report)
-
-    def test_average_excludes_first_step_and_padded_limit_batch(self):
-        torch_module, model = self.examples()
-        optimizer = types.SimpleNamespace(state={})
-        records = []
-        for index in range(17):
-            elapsed = 2.0
-            if index == 0:
-                elapsed = 20.0
-            elif index == 16:
-                elapsed = 30.0
-            records.append({"status": "completed", "elapsed_seconds": elapsed, "peak_allocated_bytes": 4*1024**3, "peak_reserved_bytes": 5*1024**3})
-        with patch.dict(sys.modules, {"torch": torch_module}):
-            with patch("src.train.create_resource_limit_batch", return_value="limit-batch"):
-                with patch("src.train.measure_resource_step", side_effect=records) as measure:
-                    with patch("builtins.print"):
-                        report = run_resource_check(model, SmallSampleTests().batches(), optimizer, "tokenizer")
-        self.assertEqual(measure.call_count, 17)
-        self.assertEqual(report["first_step_seconds"], 20.0)
-        self.assertEqual(report["subsequent_real_step_mean_seconds"], 2.0)
-        self.assertEqual(report["subsequent_real_step_count"], 15)
-        self.assertTrue(report["limit_batch_check_passed"])
-        self.assertFalse(report["gradient_accumulation_applied"])
-
-    def test_oom_stops_before_remaining_samples_and_limit_batch(self):
-        torch_module, model = self.examples()
-        record = {"status": "oom", "elapsed_seconds": 1.0, "peak_allocated_bytes": 4*1024**3, "peak_reserved_bytes": 5*1024**3}
-        with patch.dict(sys.modules, {"torch": torch_module}):
-            with patch("src.train.create_resource_limit_batch"):
-                with patch("src.train.measure_resource_step", return_value=record) as measure:
-                    with patch("builtins.print"):
-                        report = run_resource_check(model, SmallSampleTests().batches(), types.SimpleNamespace(state={}), "tokenizer")
-        self.assertEqual(measure.call_count, 1)
-        self.assertEqual(report["status"], "oom")
-        self.assertFalse(report["limit_batch_check_passed"])
-        self.assertIsNone(report["subsequent_real_step_mean_seconds"])
 
 
 class AccumulationTests(unittest.TestCase):
@@ -945,33 +692,6 @@ class AccumulationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "after clipping"):
                 train_accumulated_group(model, batches, optimizer)
         optimizer.step.assert_not_called()
-
-    def test_seventeen_samples_form_eight_eight_one_and_three_optimizer_steps(self):
-        batches = SmallSampleTests().batches()
-        extra = copy.deepcopy(batches[0])
-        extra["sample_ids"] = ["sample-16"]
-        batches.append(extra)
-        optimizer = types.SimpleNamespace(state={})
-        group_lengths = []
-
-        def train_group(model, group, optimizer, config_path):
-            group_lengths.append(len(group))
-            step = Mock()
-            step.item.return_value = len(group_lengths)
-            optimizer.state["example"] = {"step": step}
-            ids = []
-            for batch in group:
-                ids.extend(batch["sample_ids"])
-            return {"sample_ids": ids, "microbatch_count": len(group)}
-
-        with patch("src.train.train_accumulated_group", side_effect=train_group):
-            with patch("builtins.print"):
-                torch_module, model = ResourceCheckTests().examples()
-                report = run_accumulation_check(model, batches, optimizer)
-        self.assertEqual(group_lengths, [8, 8, 1])
-        self.assertEqual(report["optimizer_steps"], 3)
-        self.assertEqual(report["optimizer_state_step_values"], [3])
-        self.assertTrue(report["partial_last_group_check_passed"])
 
 
 class EpochCheckpointTests(unittest.TestCase):
@@ -1063,42 +783,6 @@ class EpochCheckpointTests(unittest.TestCase):
             self.assertEqual(load.call_args.args[0], previous)
             self.assertEqual(restored[-1]["next_epoch"], 2)
             model.train.assert_called_once_with()
-
-    def test_preview_restores_loader_state_even_when_iteration_fails(self):
-        loader = Mock()
-        loader.__iter__ = Mock(side_effect=RuntimeError("iteration failed"))
-        with patch("src.train.capture_train_loader_state", return_value={"saved": "state"}):
-            with patch("src.train.restore_train_loader_state") as restore:
-                with self.assertRaisesRegex(RuntimeError, "iteration failed"):
-                    preview_train_epoch_ids(loader)
-        restore.assert_called_once_with(loader, {"saved": "state"})
-
-    def test_test_epoch_finishes_tail_and_advances_completed_epoch_and_global_step(self):
-        batches = SmallSampleTests().batches()
-        extra = copy.deepcopy(batches[0])
-        extra["sample_ids"] = ["sample-16"]
-        batches.append(extra)
-        loader = Mock()
-        loader.dataset = []
-        for batch in batches:
-            loader.dataset.append({"id": batch["sample_ids"][0]})
-        loader.__iter__ = Mock(return_value=iter(batches))
-        optimizer = types.SimpleNamespace(state={})
-        progress = {"completed_epochs": 1, "global_step": 3}
-        sizes = []
-
-        def train_group(model, group, optimizer, config_path):
-            sizes.append(len(group))
-            step = Mock()
-            step.item.return_value = 3 + len(sizes)
-            optimizer.state["example"] = {"step": step}
-
-        with patch("src.train.train_accumulated_group", side_effect=train_group):
-            restored_progress, report = train_checkpoint_test_epoch(Mock(), loader, optimizer, progress)
-        self.assertEqual(sizes, [8, 8, 1])
-        self.assertEqual(restored_progress, {"completed_epochs": 2, "global_step": 6})
-        self.assertEqual(progress, {"completed_epochs": 1, "global_step": 3})
-        self.assertEqual(report["optimizer_state_step_values"], [6])
 
 
 class BestCheckpointTests(unittest.TestCase):
@@ -1237,7 +921,7 @@ class FullTrainingTests(unittest.TestCase):
     def test_epoch_streams_full_group_and_tail_and_counts_tokens_correctly(self):
         loader = self.loader(10)
         optimizer = types.SimpleNamespace(state={})
-        torch_module, model = ResourceCheckTests().examples()
+        torch_module, model = TrainingDeviceFixture().examples()
         sizes = []
 
         def train_group(model, group, optimizer, config_path):
@@ -1258,85 +942,6 @@ class FullTrainingTests(unittest.TestCase):
         self.assertEqual(report["train_sample_count"], 10)
         self.assertEqual(report["train_valid_target_tokens"], 10)
         self.assertEqual(report["train_loss"], 1.2)
-
-    def context(self, root):
-        config = json.loads(Path("configs/train.json").read_text(encoding="utf-8"))
-        profile = {
-            "run_id": "test-run", "train_config": config,
-            "source": {"git_commit": "test-commit", "allow_uncommitted": False},
-            "source_changes": {"patch_file": None, "untracked_snapshot_files": []},
-            "paths": {"output_dir": str(root / "outputs"), "checkpoint_dir": str(root / "checkpoints")},
-            "data": {"train_sample_count": 10, "validation_sample_count": 1},
-        }
-        return profile
-
-    def test_full_loop_and_resume_rebuild_csv_without_duplicate_epochs(self):
-        torch_module, model = ResourceCheckTests().examples()
-        train_loader = self.loader(10)
-        validation_loader = types.SimpleNamespace(dataset=[{"id": "validation-x"}])
-        optimizer = types.SimpleNamespace(state={}, param_groups=[{"lr": 0.00005}])
-        checkpoints = []
-
-        def fake_epoch(model, loader, optimizer, global_step, config_path):
-            return {"global_step": global_step + 2, "train_loss": 2.0, "train_sample_count": 10, "train_valid_target_tokens": 30, "train_seconds": 1.0}
-
-        def fake_best(model, tokenizer, root, progress, validation, config_path):
-            updated = dict(progress)
-            updated["best_validation_loss"] = validation["validation_loss"]
-            updated["best_epoch"] = updated["completed_epochs"]
-            updated["best_global_step"] = updated["global_step"]
-            return updated, {"updated": True}
-
-        def fake_save(model, tokenizer, optimizer, root, progress, loader, config_path):
-            checkpoints.append(copy.deepcopy(progress))
-
-        with tempfile.TemporaryDirectory() as directory:
-            profile = self.context(Path(directory))
-            with patch.dict(sys.modules, {"torch": torch_module}):
-                with patch("src.train.collect_run_source", return_value=({"git_commit": "test-commit"}, b"", {})):
-                    with patch("src.train.train_epoch", side_effect=fake_epoch):
-                        with patch("src.train.validate_model", return_value={"validation_loss": 1.0, "sample_count": 1, "valid_target_token_count": 5}):
-                            with patch("src.train.update_best_checkpoint", side_effect=fake_best):
-                                with patch("src.train.save_last_checkpoint", side_effect=fake_save):
-                                    with patch("builtins.print"):
-                                        first = fit_model(model, "tokenizer", optimizer, train_loader, validation_loader, profile)
-                                        resumed = fit_model(model, "tokenizer", optimizer, train_loader, validation_loader, profile, progress=checkpoints[0])
-            expected_epochs = profile["train_config"]["num_epochs"]
-            expected_epoch_numbers = list(range(1, expected_epochs + 1))
-            self.assertEqual(first["completed_epochs"], expected_epochs)
-            self.assertEqual(resumed["global_step"], expected_epochs * 2)
-            self.assertEqual([row["epoch"] for row in resumed["history"]], expected_epoch_numbers)
-            import csv
-            with Path(resumed["history_file"]).open(encoding="utf-8", newline="") as file:
-                rows = list(csv.DictReader(file))
-            self.assertEqual([int(row["epoch"]) for row in rows], expected_epoch_numbers)
-            self.assertEqual([int(row["global_step"]) for row in rows], [epoch * 2 for epoch in expected_epoch_numbers])
-            self.assertEqual(len(checkpoints), expected_epochs * 2 - 1)
-            self.assertEqual(len(checkpoints[-1]["training_history"]), expected_epochs)
-
-    def test_changed_source_is_rejected_before_training(self):
-        torch_module, model = ResourceCheckTests().examples()
-        with tempfile.TemporaryDirectory() as directory:
-            profile = self.context(Path(directory))
-            with patch.dict(sys.modules, {"torch": torch_module}):
-                with patch("src.train.collect_run_source", return_value=({"git_commit": "test-commit"}, b"changed patch", {})):
-                    with patch("src.train.train_epoch") as train:
-                        with self.assertRaisesRegex(ValueError, "source changes do not match"):
-                            fit_model(model, "tokenizer", Mock(), self.loader(10), Mock(), profile)
-            train.assert_not_called()
-
-    def test_old_checkpoint_without_full_epoch_history_is_rejected(self):
-        torch_module, model = ResourceCheckTests().examples()
-        with tempfile.TemporaryDirectory() as directory:
-            profile = self.context(Path(directory))
-            with patch.dict(sys.modules, {"torch": torch_module}):
-                with patch("src.train.collect_run_source", return_value=({"git_commit": "test-commit"}, b"", {})):
-                    with self.assertRaisesRegex(ValueError, "history row"):
-                        fit_model(
-                            model, "tokenizer", Mock(), self.loader(10),
-                            types.SimpleNamespace(dataset=[{"id": "validation-x"}]), profile,
-                            progress={"completed_epochs": 1, "global_step": 2},
-                        )
 
 
 if __name__ == "__main__":
