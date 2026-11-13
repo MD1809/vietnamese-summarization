@@ -30,6 +30,16 @@ Chạy toàn bộ luồng chính thực sự tốn thời gian huấn luyện v�
 
 Lượt chạy đã kiểm chứng: `vit5_finetuning_20261111_153238_146403`, đủ 10 epoch/2.500 update, best epoch 2/step 500, validation loss 2.102667951223594. [Log và summary](reports/training_runs/vit5_finetuning_20261111_153238_146403/training_summary.json), [phân tích](reports/training_runs/vit5_finetuning_20261111_153238_146403/training_analysis.md) và [biểu đồ](reports/training_runs/vit5_finetuning_20261111_153238_146403/figures/training_loss.png). Notebook ghi validation ROUGE-L F1 x100: greedy 20.9959, beam 4 là 21.3983 trên 201 mẫu; test của run mới chưa chạy. Điểm test lịch sử không được gán cho run này.
 
+## Đánh giá TextRank và ViT5 trong notebook riêng
+
+Mở `notebooks/vietnamese_summarization_evaluation.ipynb` trong phiên Colab GPU mới, không cần chạy notebook train trước đó. Notebook có tám cell code. Để `evaluation_run_id=""` để chọn run hoàn tất mới nhất hoặc điền run cụ thể; cần config.json, training_summary.json, best và dữ liệu/manifest tương ứng trên Drive. Cấu hình lấy từ hồ sơ run, mã đánh giá lấy commit mới nhất đã push khi target_commit rỗng.
+
+Chạy cell 1–5 để thiết lập và đo validation: ViT5 greedy/beam cùng TextRank. Đọc kết quả, rồi trong cell 6 chọn `selected_method="beam"` hoặc `"greedy"`, bật `evaluate_test=True` và chạy 6–8 để chấm test/xuất ZIP. Mặc định test tắt; tham chiếu chỉ được đưa vào chấm ROUGE sau khi có dự đoán. Không dùng điểm test để chỉnh thuật toán, và cần ghi rõ test đã từng được đánh giá trong dự án.
+
+Nếu ngắt phiên sau validation: điền đúng run ID và Comparison ID ở cell 1 (hoặc dùng quy tắc tự chọn), chạy 1–4 rồi 6–8. Validation phải có đủ báo cáo TextRank/ViT5 do notebook này tạo; source/cấu hình đã đổi thì cần đo lại validation. Không cần cell tạm, không huấn luyện lại. Cell 5 tải ZIP validation để giải nén vào `reports/training_runs/<run_id>/validation/<comparison_id>/`. Cell 8 tải ZIP test, giải nén vào `reports/training_runs/<run_id>/<test_evaluation_id>/`, gồm dự đoán, ROUGE, comparison.csv, quyết định và hồ sơ nguồn. Giữ kết quả lịch sử riêng.
+
+Theo lựa chọn tách trách nhiệm, người thực hiện sẽ tự bỏ cell code 11–13 và các tiêu đề tương ứng trong notebook train sau khi run đang chạy hoàn tất. Giữ cell 1–10, gồm validation loss chọn best/checkpoint/phân tích loss. Source bàn giao hiện chưa tự sửa notebook train trong task tạo evaluation này. Phần hướng dẫn train phía trên phản ánh bản trước khi tách; dùng notebook evaluation để đánh giá mới, không chạy chấm lại cả hai nơi.
+
 ## Chạy demo từ phiên Colab mới
 
 1. Mở `notebooks/vietnamese_summarization_demo.ipynb` trong phiên Colab mới với T4 GPU. Notebook gồm sáu cell code, không cần upload mã hoặc tải file kết quả thủ công.
