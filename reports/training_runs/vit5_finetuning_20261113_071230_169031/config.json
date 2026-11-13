@@ -1,0 +1,121 @@
+{
+  "run_id": "vit5_finetuning_20261113_071230_169031",
+  "created_at_utc": "2026-11-13T07:12:30.169031+00:00",
+  "run_status": "setup_only",
+  "source": {
+    "repo_url": "https://github.com/MD1809/vietnamese-summarization.git",
+    "git_commit": "b5cb961ed118f014d8fc4c5c5af607d429361949",
+    "commit_on_fetched_origin_main": true,
+    "has_uncommitted_changes": false,
+    "status_porcelain": "",
+    "allow_uncommitted": false
+  },
+  "train_config": {
+    "config_status": "initial",
+    "model": {
+      "id": "VietAI/vit5-base",
+      "revision": "2209a38d735ede63e88f5aa52bcdc11a05a37b85"
+    },
+    "dataset": {
+      "id": "esdurmus/wiki_lingua",
+      "revision": "ea3db3510cbd34d0f8dc612419ae40e4732f3b40",
+      "language": "vietnamese"
+    },
+    "paths": {
+      "train_file": "data/processed/train.jsonl",
+      "validation_file": "data/processed/validation.jsonl",
+      "test_file": "data/processed/test.jsonl",
+      "subset_manifest": "data/manifests/wikilingua_subsets.json",
+      "processed_manifest": "data/manifests/wikilingua_processed.json",
+      "output_dir": "outputs",
+      "checkpoint_dir": "checkpoints"
+    },
+    "seed": 42,
+    "task_prefix": "",
+    "max_source_length": 1024,
+    "max_target_length": 128,
+    "token_limits_decision": {
+      "status": "approved",
+      "selected_report": "data/manifests/wikilingua_truncation_1024_128.json",
+      "reason": "Selected source limit 1024 with document truncation of 11.05% on train and 11.94% on validation; target limit is 128.",
+      "training_memory_verified": true,
+      "training_memory_verification_scope": "Tesla T4 fp32 batch 1; 16 real train steps and one padded 1024/128 step completed; accumulation and full training loop not yet verified",
+      "training_memory_verification_report": "outputs/vit5_finetuning_20261105_165225_962607/resource_check.json"
+    },
+    "batch_size": 1,
+    "gradient_accumulation_steps": 8,
+    "max_grad_norm": 1.0,
+    "learning_rate": 5e-05,
+    "num_epochs": 10,
+    "optimizer": "AdamW",
+    "weight_decay": 0.01,
+    "precision": "fp32",
+    "checkpoint_selection": {
+      "metric": "validation_loss",
+      "mode": "min"
+    }
+  },
+  "generation_config": {
+    "num_beams": 4,
+    "max_new_tokens": 128,
+    "do_sample": false
+  },
+  "environment": {
+    "python_version": "3.13.16",
+    "library_versions": {
+      "torch": "2.11.0+cu130",
+      "transformers": "4.57.6",
+      "datasets": "4.8.5",
+      "sentencepiece": "0.2.2",
+      "rouge-score": "0.1.2",
+      "pandas": "2.2.3",
+      "matplotlib": "3.10.0",
+      "gradio": "6.17.3",
+      "numpy": "2.4.6"
+    },
+    "pytorch_cuda_version": "13.0",
+    "cuda_available": true,
+    "gpus": [
+      {
+        "index": 0,
+        "name": "Tesla T4",
+        "total_vram_gib": 14.56
+      }
+    ]
+  },
+  "data": {
+    "subset_manifest_sha256": "0b4018e264f7a86e45010a230c4ebbe5969b8743772022af4d17ae3e37efad57",
+    "verified_source_files": {
+      "train": {
+        "path": "data/processed/train.jsonl",
+        "pair_count": 2000,
+        "byte_count": 7545660,
+        "sha256": "dd3a50a9a6a4f9d087904a604c41b9db3fc82023266b9b90554934b6220fe483"
+      },
+      "validation": {
+        "path": "data/processed/validation.jsonl",
+        "pair_count": 201,
+        "byte_count": 761416,
+        "sha256": "c0033e989ae1cae5a06898c0d45884498b32ef3fd0aade42ce763332ccafc1fe"
+      }
+    },
+    "train_sample_count": 2000,
+    "validation_sample_count": 201,
+    "train_validation_readback_check_passed": true,
+    "test_content_read": false
+  },
+  "paths": {
+    "drive_root": "/content/drive/.shortcut-targets-by-id/1pYCC4s6c4UIpyf6pvB0tIsvIlJTL48zs/vietnamese-summarization",
+    "output_dir": "/content/drive/.shortcut-targets-by-id/1pYCC4s6c4UIpyf6pvB0tIsvIlJTL48zs/vietnamese-summarization/outputs/vit5_finetuning_20261113_071230_169031",
+    "checkpoint_dir": "/content/drive/.shortcut-targets-by-id/1pYCC4s6c4UIpyf6pvB0tIsvIlJTL48zs/vietnamese-summarization/checkpoints/vit5_finetuning_20261113_071230_169031",
+    "train_file": "/content/drive/.shortcut-targets-by-id/1pYCC4s6c4UIpyf6pvB0tIsvIlJTL48zs/vietnamese-summarization/data/processed/train.jsonl",
+    "validation_file": "/content/drive/.shortcut-targets-by-id/1pYCC4s6c4UIpyf6pvB0tIsvIlJTL48zs/vietnamese-summarization/data/processed/validation.jsonl",
+    "test_file": "/content/drive/.shortcut-targets-by-id/1pYCC4s6c4UIpyf6pvB0tIsvIlJTL48zs/vietnamese-summarization/data/processed/test.jsonl",
+    "subset_manifest": "/content/drive/.shortcut-targets-by-id/1pYCC4s6c4UIpyf6pvB0tIsvIlJTL48zs/vietnamese-summarization/data/manifests/wikilingua_subsets.json",
+    "processed_manifest": "/content/drive/.shortcut-targets-by-id/1pYCC4s6c4UIpyf6pvB0tIsvIlJTL48zs/vietnamese-summarization/data/manifests/wikilingua_processed.json"
+  },
+  "source_changes": {
+    "patch_file": null,
+    "untracked_snapshot_files": []
+  }
+}

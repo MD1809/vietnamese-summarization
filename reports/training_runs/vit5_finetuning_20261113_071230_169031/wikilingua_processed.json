@@ -1,0 +1,40 @@
+{
+  "dataset": {
+    "id": "esdurmus/wiki_lingua",
+    "revision": "ea3db3510cbd34d0f8dc612419ae40e4732f3b40",
+    "language": "vietnamese"
+  },
+  "seed": 42,
+  "subset_manifest": "data/manifests/wikilingua_subsets.json",
+  "subset_manifest_sha256": "0b4018e264f7a86e45010a230c4ebbe5969b8743772022af4d17ae3e37efad57",
+  "files": {
+    "train": {
+      "path": "data/processed/train.jsonl",
+      "pair_count": 2000,
+      "byte_count": 7545660,
+      "sha256": "dd3a50a9a6a4f9d087904a604c41b9db3fc82023266b9b90554934b6220fe483"
+    },
+    "validation": {
+      "path": "data/processed/validation.jsonl",
+      "pair_count": 201,
+      "byte_count": 761416,
+      "sha256": "c0033e989ae1cae5a06898c0d45884498b32ef3fd0aade42ce763332ccafc1fe"
+    },
+    "test": {
+      "path": "data/processed/test.jsonl",
+      "pair_count": 200,
+      "byte_count": 720594,
+      "sha256": "38d26a7b469f4dbc79e65ff4a31f034c69626d6b0e4d023a2d12945068eb6731"
+    }
+  },
+  "statistics": {
+    "path": "data/manifests/wikilingua_statistics.json",
+    "sha256": "ef2ed187f3fcc505ea2f2f7748c8a3f6971c57705602c5d1d34bed0ed8823d12"
+  },
+  "test_lock": {
+    "locked": true,
+    "sha256": "38d26a7b469f4dbc79e65ff4a31f034c69626d6b0e4d023a2d12945068eb6731",
+    "policy": "fixed IDs and content; do not use test for tuning; evaluate only in stage 6"
+  },
+  "created_at_utc": "2026-11-05T01:04:41.374308+00:00"
+}

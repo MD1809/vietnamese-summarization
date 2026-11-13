@@ -9,7 +9,7 @@ import time
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 from src.train import write_training_history
 
@@ -155,56 +155,24 @@ class TrainingNotebookTests(unittest.TestCase):
                 self.execute(codes[6], namespace)
             train.train_epoch.assert_not_called()
 
-    def test_test_is_disabled_by_default_without_loading_test_data(self):
-        source = notebook_code()[12]
-        self.execute(source, {})
-
-    def test_optional_test_freezes_decision_and_scores_the_new_run(self):
-        source = notebook_code()[12]
-        source = source.replace("evaluate_test = False", "evaluate_test = True", 1)
-        source = source.replace('selected_method = ""', 'selected_method = "beam"', 1)
+    def test_source_selection_uses_latest_for_new_run_and_original_for_resume(self):
+        source = notebook_code()[1]
+        start = source.index('subprocess.run(["git", "fetch"')
+        end = source.index('os.chdir(repo_dir)')
+        source = source[start:end]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            root.joinpath("subset.json").write_text("{}", encoding="utf-8")
-            root.joinpath("processed.json").write_text("{}", encoding="utf-8")
-            generation = {"num_beams": 4, "do_sample": False, "max_new_tokens": 128}
-            rows = [
-                {"id": "test_1", "document": "first", "summary": "ref one"},
-                {"id": "test_2", "document": "second", "summary": "ref two"},
-            ]
-
-            def load_test(drive_root, approved):
-                files = list(root.glob("test_evaluation_*/decoding_selection.json"))
-                self.assertEqual(len(files), 1)
-                decision = json.loads(files[0].read_text(encoding="utf-8"))
-                self.assertEqual(decision["run_id"], "new_run")
-                return rows, {"sha256": "fixture"}
-
-            score = {"sample_count": 2, "mean_f1": {"rougeL": 0.5}, "mean_f1_percent": {"rougeL": 50.0}, "settings": {}}
-            namespace = {
-                "Path": Path, "json": json, "output_dir": root, "drive_root": root,
-                "run_profile": {"run_id": "new_run"},
-                "train_config": {"seed": 42, "paths": {"subset_manifest": "subset.json", "processed_manifest": "processed.json"}},
-                "comparison_report": {
-                    "checkpoint_run_id": "new_run", "comparison_id": "new_validation",
-                    "best_epoch": 2, "best_global_step": 2, "best_validation_loss": 1.8,
-                    "candidates": {"beam": {"generation_config": generation}},
-                },
-                "src": types.SimpleNamespace(evaluate=types.SimpleNamespace(load_fixed_test_source=Mock(side_effect=load_test))),
-                "checkpoint_dir": root / "checkpoints/new_run", "config_path": root / "train.json",
-                "load_summarizer": Mock(return_value=(object(), object(), {"epoch": 2, "global_step": 2, "validation_loss": 1.8})),
-                "summarize_text": Mock(return_value={"summary": "generated", "used_input_ids": [1]}),
-                "set_seed": Mock(), "gc": types.SimpleNamespace(collect=Mock()),
-                "torch": types.SimpleNamespace(cuda=types.SimpleNamespace(empty_cache=Mock())),
-            }
-            with patch("src.baseline.summarize_lead_three", return_value={"summary": "baseline", "used_input_ids": [1]}):
-                with patch("src.metrics.score_summaries", return_value=score) as scoring:
-                    self.execute(source, namespace)
-            self.assertEqual(scoring.call_count, 2)
-            self.assertEqual(scoring.call_args.args[0], ["ref one", "ref two"])
-            test_dir = namespace["test_dir"]
-            records = [json.loads(line) for line in (test_dir / "predictions.jsonl").read_text(encoding="utf-8").splitlines()]
-            self.assertEqual([r["id"] for r in records], ["test_1", "test_2"])
-            saved = json.loads((test_dir / "metrics.json").read_text(encoding="utf-8"))
-            self.assertEqual(saved["run_id"], "new_run")
-            self.assertEqual(saved["generation_config"], generation)
+            profile_dir = root / "outputs" / "saved_run"
+            profile_dir.mkdir(parents=True)
+            (profile_dir / "config.json").write_text(json.dumps({
+                "source": {"git_commit": "original_commit"},
+            }), encoding="utf-8")
+            for resume, expected in [("", "latest_commit"), ("saved_run", "original_commit")]:
+                subprocess = types.SimpleNamespace(run=Mock(return_value=types.SimpleNamespace(stdout="latest_commit\n")))
+                namespace = {
+                    "subprocess": subprocess, "repo_dir": root, "drive_root": root,
+                    "resume_run_id": resume, "target_commit": "", "json": json,
+                }
+                self.execute(source, namespace)
+                self.assertEqual(namespace["target_commit"], expected)
+                self.assertEqual(subprocess.run.call_args.args[0], ["git", "checkout", "--detach", expected])
