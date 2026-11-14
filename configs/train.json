@@ -35,6 +35,10 @@
   "max_grad_norm": 1.0,
   "learning_rate": 0.00005,
   "num_epochs": 10,
+  "early_stopping": {
+    "patience": 3,
+    "min_delta": 0.0
+  },
   "optimizer": "AdamW",
   "weight_decay": 0.01,
   "precision": "fp32",

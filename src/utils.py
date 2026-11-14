@@ -96,6 +96,14 @@ def load_train_config(path="configs/train.json"):
         raise ValueError("precision must be fp32, fp16 or bf16")
     if config.get("checkpoint_selection") != {"metric": "validation_loss", "mode": "min"}:
         raise ValueError("Select checkpoints by minimum validation_loss")
+    if "early_stopping" in config:
+        settings = config["early_stopping"]
+        if not isinstance(settings, dict):
+            raise ValueError("early_stopping must be a JSON object")
+        _positive_integer(settings, "patience")
+        min_delta = settings.get("min_delta")
+        if type(min_delta) not in (int, float) or not math.isfinite(min_delta) or min_delta < 0:
+            raise ValueError("early_stopping.min_delta must be a finite nonnegative number")
     return config
 
 

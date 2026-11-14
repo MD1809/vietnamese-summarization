@@ -1,6 +1,21 @@
 from src.utils import load_train_config
 
 
+def early_stopping(state, validation_loss, settings):
+    import math
+
+    if settings is None:
+        return None, False
+    if not math.isfinite(validation_loss) or validation_loss < 0:
+        raise ValueError("Early stopping requires a finite nonnegative validation loss")
+    if state is None or validation_loss < state["best_loss"] - settings["min_delta"]:
+        updated = {"best_loss": validation_loss, "epochs_without_improvement": 0}
+    else:
+        updated = dict(state)
+        updated["epochs_without_improvement"] += 1
+    return updated, updated["epochs_without_improvement"] >= settings["patience"]
+
+
 def load_vit5_model(config_path="configs/train.json"):
     import torch
     from transformers import AutoModelForSeq2SeqLM

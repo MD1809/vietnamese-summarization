@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 
-from src.train import write_training_history
+from src.train import early_stopping, write_training_history
 
 
 NOTEBOOK = Path(__file__).resolve().parent.parent / "notebooks" / "vietnamese_summarization_train.ipynb"
@@ -27,11 +27,13 @@ def notebook_code():
 
 
 class TrainingNotebookTests(unittest.TestCase):
-    def fixture(self, directory, resume):
+    def fixture(self, directory, resume, early_stopping_settings=None):
         root = Path(directory)
         output = root / "outputs" / "new_run"
         output.mkdir(parents=True)
         config = {"seed": 42, "num_epochs": 3, "gradient_accumulation_steps": 1}
+        if early_stopping_settings is not None:
+            config["early_stopping"] = early_stopping_settings
         profile = {
             "run_id": "new_run",
             "train_config": config,
@@ -87,6 +89,7 @@ class TrainingNotebookTests(unittest.TestCase):
             update_best_checkpoint=Mock(side_effect=update_best),
             save_last_checkpoint=Mock(),
             write_training_history=write_training_history,
+            early_stopping=early_stopping,
         )
         namespace = {
             "Path": Path, "json": json, "csv": csv, "math": math, "time": time,
@@ -154,6 +157,57 @@ class TrainingNotebookTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.execute(codes[6], namespace)
             train.train_epoch.assert_not_called()
+
+    def test_early_stopping_saves_final_epoch_and_keeps_best(self):
+        codes = notebook_code()
+        with tempfile.TemporaryDirectory() as directory:
+            namespace, train = self.fixture(directory, False)
+            namespace["train_config"].update({
+                "num_epochs": 10, "early_stopping": {"patience": 2, "min_delta": 0.0},
+            })
+            train.validate_model.side_effect = [
+                {"validation_loss": loss, "sample_count": 1, "valid_target_token_count": 5}
+                for loss in [2.12, 2.10, 2.22, 2.26]
+            ]
+            self.execute(codes[5], namespace)
+            self.execute(codes[6], namespace)
+            self.execute(codes[7], namespace)
+            self.assertEqual(train.train_epoch.call_count, 4)
+            self.assertEqual(train.save_last_checkpoint.call_count, 4)
+            saved_progress = train.save_last_checkpoint.call_args.args[4]
+            self.assertEqual(saved_progress["early_stopping"], {
+                "best_loss": 2.10, "epochs_without_improvement": 2,
+            })
+            summary = namespace["training_summary"]
+            self.assertTrue(summary["stopped_early"])
+            self.assertEqual(summary["stop_reason"], "early_stopping")
+            self.assertEqual(summary["best_epoch"], 2)
+            self.assertEqual(len(summary["history"]), 4)
+
+    def test_resume_preserves_counter_and_does_not_restart_stopped_run(self):
+        codes = notebook_code()
+        for count, expected_calls in [(1, 1), (2, 0)]:
+            with self.subTest(count=count), tempfile.TemporaryDirectory() as directory:
+                namespace, train = self.fixture(directory, True, {"patience": 2, "min_delta": 0.0})
+                progress = train.load_last_checkpoint.return_value[3]
+                progress["early_stopping"] = {"best_loss": 1.5, "epochs_without_improvement": count}
+                self.execute(codes[5], namespace)
+                self.execute(codes[6], namespace)
+                self.assertEqual(train.train_epoch.call_count, expected_calls)
+                self.assertTrue(namespace["training_summary"]["stopped_early"])
+
+    def test_resume_reconstructs_missing_counter_from_history(self):
+        codes = notebook_code()
+        with tempfile.TemporaryDirectory() as directory:
+            namespace, train = self.fixture(directory, True, {"patience": 1, "min_delta": 0.0})
+            train.validate_model.side_effect = [{
+                "validation_loss": 2.1, "sample_count": 1, "valid_target_token_count": 5,
+            }]
+            self.execute(codes[5], namespace)
+            self.execute(codes[6], namespace)
+            self.assertEqual(train.train_epoch.call_count, 1)
+            self.assertEqual(namespace["training_summary"]["best_epoch"], 1)
+            self.assertTrue(namespace["training_summary"]["stopped_early"])
 
     def test_source_selection_uses_latest_for_new_run_and_original_for_resume(self):
         source = notebook_code()[1]
