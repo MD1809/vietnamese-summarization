@@ -28,8 +28,22 @@ def select_completed_run(drive_root, run_id=""):
         raise ValueError("Lỗi: Hồ sơ và summary không thuộc run đã chọn.")
     if summary["run_status"] != "completed":
         raise ValueError("Lỗi: Run đang huấn luyện dở, chưa dùng làm demo chính.")
-    if summary["completed_epochs"] != profile["train_config"]["num_epochs"]:
+    completed_epochs = summary["completed_epochs"]
+    max_epochs = profile["train_config"]["num_epochs"]
+    if type(completed_epochs) is not int or not 1 <= completed_epochs <= max_epochs:
         raise ValueError("Lỗi: Số epoch hoàn thành không khớp hồ sơ run.")
+    if completed_epochs < max_epochs:
+        settings = profile["train_config"].get("early_stopping") or {}
+        state = summary.get("early_stopping") or {}
+        patience = settings.get("patience")
+        count = state.get("epochs_without_improvement")
+        if (
+            summary.get("stopped_early") is not True
+            or summary.get("stop_reason") != "early_stopping"
+            or type(patience) is not int or patience <= 0
+            or type(count) is not int or count < patience
+        ):
+            raise ValueError("Lỗi: Run chưa đủ epoch và không có trạng thái early stopping hợp lệ.")
     checkpoint_dir = root / "checkpoints" / run_id
     for name in ["config.json", "model.safetensors", "spiece.model", "tokenizer_config.json", "selection.json"]:
         path = checkpoint_dir / "best" / name

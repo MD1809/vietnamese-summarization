@@ -289,3 +289,38 @@ class DemoDataTests(unittest.TestCase):
             validation.write_bytes(b"changed")
             with self.assertRaises(ValueError):
                 load_validation_examples(root, profile)
+
+    def test_early_stopped_run_is_completed_for_explicit_and_automatic_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile, best = self.make_run(root, "vit5_finetuning_20261114_083823_007233")
+            run = root / "outputs" / profile["run_id"]
+            profile["train_config"]["early_stopping"] = {"patience": 3, "min_delta": 0.0}
+            (run / "config.json").write_text(json.dumps(profile), encoding="utf-8")
+            selection_path = best / "selection.json"
+            selection = json.loads(selection_path.read_text(encoding="utf-8"))
+            selection["train_config"] = profile["train_config"]
+            selection_path.write_text(json.dumps(selection), encoding="utf-8")
+            summary_path = run / "training_summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary.update({
+                "completed_epochs": 5, "stopped_early": True, "stop_reason": "early_stopping",
+                "early_stopping": {"best_loss": 2.1, "epochs_without_improvement": 3},
+            })
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+            for run_id in ["", profile["run_id"]]:
+                selected, actual_summary, checkpoint = select_completed_run(root, run_id)
+                self.assertEqual(selected, profile)
+                self.assertEqual(actual_summary, summary)
+                self.assertEqual(checkpoint, best.parent)
+
+            for changes in [
+                {"stopped_early": False}, {"stop_reason": "max_epochs"},
+                {"early_stopping": {"epochs_without_improvement": 2}},
+                {"early_stopping": None},
+                {"completed_epochs": 0}, {"completed_epochs": 11},
+            ]:
+                with self.subTest(changes=changes):
+                    summary_path.write_text(json.dumps({**summary, **changes}), encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        select_completed_run(root, profile["run_id"])
