@@ -577,6 +577,7 @@ class TrainingRunTests(unittest.TestCase):
             manifest_root = drive_root / "data" / "manifests"
             manifest_root.mkdir(parents=True)
             for key in ["subset_manifest", "processed_manifest"]:
+                (drive_root / config["paths"][key]).parent.mkdir(parents=True, exist_ok=True)
                 (drive_root / config["paths"][key]).write_text("{}", encoding="utf-8")
             result = (config, {"train": [1, 2], "validation": [3]}, {}, "existing-fingerprint")
             with patch.dict(sys.modules, {"torch": torch_module}):

@@ -562,6 +562,15 @@ def select_fixed_subsets(
     return subsets, manifest
 
 
+def select_full_dataset(dataset_splits, split_manifest, config_path="configs/train.json"):
+    """Keep every sample in the existing grouped splits without repartitioning."""
+    targets = {name: len(dataset_splits[name]) for name in ["train", "validation", "test"]}
+    splits, manifest = select_fixed_subsets(dataset_splits, split_manifest, targets, config_path)
+    manifest["scope"] = "full"
+    manifest["rules"]["selection"] = "all samples and whole components from each parent split"
+    return splits, manifest
+
+
 def restore_fixed_subsets(dataset_splits, split_manifest, subset_manifest):
     if subset_manifest["parent_split_sha256"] != _split_manifest_fingerprint(split_manifest):
         raise ValueError("Subset manifest refers to a different parent split manifest")
@@ -832,20 +841,22 @@ def export_prepared_datasets(
             "sha256": hashlib.sha256(content).hexdigest(),
         }
 
-    stats_relative = "data/manifests/wikilingua_statistics.json"
+    stats_relative = config["paths"].get("statistics_manifest", "data/manifests/wikilingua_statistics.json")
     stats_path = _prepared_file_path(project_root, stats_relative)
     stats_content = json.dumps(statistics, ensure_ascii=False, indent=2).encode("utf-8")
     if stats_path in candidate_files:
         raise ValueError("Statistics path must not match a split path")
     candidate_files[stats_path] = stats_content
-    manifest_path = _prepared_file_path(project_root, "data/manifests/wikilingua_processed.json")
+    manifest_path = _prepared_file_path(
+        project_root, config["paths"].get("processed_manifest", "data/manifests/wikilingua_processed.json"),
+    )
     if manifest_path in candidate_files:
         raise ValueError("Processed manifest path must not match a data path")
 
     manifest = {
         "dataset": config["dataset"].copy(),
         "seed": config["seed"],
-        "subset_manifest": "data/manifests/wikilingua_subsets.json",
+        "subset_manifest": config["paths"].get("subset_manifest", "data/manifests/wikilingua_subsets.json"),
         "subset_manifest_sha256": subset_hash,
         "files": file_metadata,
         "statistics": {

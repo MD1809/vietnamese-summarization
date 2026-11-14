@@ -10,13 +10,14 @@
     "language": "vietnamese"
   },
   "paths": {
-    "train_file": "data/processed/train.jsonl",
-    "validation_file": "data/processed/validation.jsonl",
-    "test_file": "data/processed/test.jsonl",
-    "subset_manifest": "data/manifests/wikilingua_subsets.json",
-    "processed_manifest": "data/manifests/wikilingua_processed.json",
+    "train_file": "data/processed/full/train.jsonl",
+    "validation_file": "data/processed/full/validation.jsonl",
+    "test_file": "data/processed/full/test.jsonl",
+    "subset_manifest": "data/manifests/full/wikilingua_full.json",
+    "processed_manifest": "data/manifests/full/wikilingua_processed.json",
     "output_dir": "outputs",
-    "checkpoint_dir": "checkpoints"
+    "checkpoint_dir": "checkpoints",
+    "statistics_manifest": "data/manifests/full/wikilingua_statistics.json"
   },
   "seed": 42,
   "task_prefix": "",
@@ -24,8 +25,8 @@
   "max_target_length": 128,
   "token_limits_decision": {
     "status": "approved",
-    "selected_report": "data/manifests/wikilingua_truncation_1024_128.json",
-    "reason": "Selected source limit 1024 with document truncation of 11.05% on train and 11.94% on validation; target limit is 128.",
+    "selected_report": "data/manifests/full/wikilingua_truncation_1024_128.json",
+    "reason": "Keep source/target limits 1024/128; regenerate truncation statistics on the full train/validation splits during data preparation. Previous percentages apply only to the small subset.",
     "training_memory_verified": true,
     "training_memory_verification_scope": "Tesla T4 fp32 batch 1; 16 real train steps and one padded 1024/128 step completed; accumulation and full training loop not yet verified",
     "training_memory_verification_report": "outputs/vit5_finetuning_20261105_165225_962607/resource_check.json"

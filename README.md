@@ -8,13 +8,32 @@ Dự án sử dụng PyTorch để huấn luyện trên Google Colab, đánh gi�
 
 Mở `notebooks/vietnamese_summarization_data_preparation.ipynb` trên Google Colab bằng runtime thường, không cần GPU. Dùng phiên mới và chạy lần lượt chín cell code từ trên xuống; các cell Markdown giải thích ngay trước từng phần. Nếu Colab yêu cầu khởi động lại sau khi cài thư viện, khởi động lại rồi chạy hai cell code đầu và tiếp tục từ cell import/cấu hình, không cần cài lại ngay.
 
-Notebook lấy mã nền `b21dc1b3313021c88ff37a834fda5b3cdb83b2f3` từ GitHub, dùng cache WikiLingua trên Drive, chuẩn hóa/làm sạch, chia nhóm và khôi phục đúng ID tập con từ manifest đã chốt. Chỉ có một luồng chạy, không tải mã thủ công hoặc chọn chế độ tạo/đọc dữ liệu. Thống kê token trên train không tạo batch; tokenization và DataLoader phục vụ học thuộc notebook huấn luyện.
+Notebook lấy commit mới nhất trên `origin/main` khi `target_commit=""`, dùng cache WikiLingua trên Drive, chuẩn hóa/làm sạch và giữ toàn bộ các tập đã chia theo nhóm trong `wikilingua_splits.json`: **15.601 train / 2.034 validation / 1.942 test**. Không lấy tập con và không chia lại dữ liệu. Thống kê token chỉ dùng train; báo cáo cắt token dùng train/validation.
 
-Đầu ra trên Drive: `MyDrive/vietnamese-summarization/data/processed/` chứa `train.jsonl`, `validation.jsonl`, `test.jsonl` với 2.000/201/200 mẫu; `data/manifests/` chứa metadata đi kèm. Nội dung file đã có phải khớp, nếu khác chương trình dừng thay vì ghi đè. Không chọn lại ID hoặc dùng test để điều chỉnh mô hình. Sau khi chạy, lưu notebook với output cuối gọn về `notebooks/`; không cần tải JSONL vào source hoặc thay các manifest đã chốt trong Git.
+Đầu ra trên Drive: `MyDrive/vietnamese-summarization/data/processed/full/` chứa `train.jsonl`, `validation.jsonl`, `test.jsonl`; `data/manifests/full/` chứa `wikilingua_full.json`, manifest nội dung/hash, thống kê và báo cáo cắt token 1024/128 mới. Đây là dữ liệu mặc định trong `configs/train.json`, không phụ thuộc run cũ. Đường dẫn mới tránh xung đột với các file tập con đã khóa trên Drive. File đã có phải khớp nội dung; không ghi đè dữ liệu khác. Test chỉ dùng cho đánh giá cuối cùng.
+
+Nơi lưu thống nhất: mã nguồn, notebook và cấu hình nằm trên GitHub; dữ liệu và kết quả chạy nằm trên Google Drive. Các đường dẫn tương đối trong `configs/train.json` được ghép với `drive_root`, không phải thư mục clone mã nguồn `/content/vietnamese-summarization`. Notebook tự tạo các thư mục cần thiết:
+
+```text
+MyDrive/vietnamese-summarization/
+├── data/
+│   ├── raw/
+│   ├── processed/full/
+│   │   ├── train.jsonl
+│   │   ├── validation.jsonl
+│   │   └── test.jsonl
+│   └── manifests/full/
+├── checkpoints/<run_id>/
+└── outputs/<run_id>/
+```
+
+Không cần chép JSONL, manifest đầy đủ hoặc trọng số vào repository. `.gitignore` loại các thư mục dữ liệu phát sinh này khỏi Git nếu chúng được tải về máy. Manifest tập con cũ đang có trong repository chỉ là hồ sơ lịch sử; run đầy đủ dùng manifest mới trên Drive.
 
 ## Huấn luyện một run mới
 
 Mở `notebooks/vietnamese_summarization_train.ipynb` trên Colab với GPU T4. Notebook có 10 cell code: kết nối/lấy mã/cài thư viện → tokenize/DataLoader → tải ViT5-Base và AdamW → vòng lặp epoch/validation loss/last-best → log/biểu đồ/phân tích và tải ZIP. Sinh tóm tắt, so sánh decoding và chấm ROUGE nằm trong notebook evaluation riêng.
+
+Trước run đầy đủ đầu tiên, commit/push thay đổi và chạy notebook chuẩn bị dữ liệu mới trên Drive. Sau đó mở notebook train đã cập nhật và chạy từ đầu. Các output trong notebook train đã lưu trước đây thuộc run tập con; chưa phải kết quả huấn luyện đầy đủ.
 
 Mặc định `resume_run_id=""` tạo run mới từ ViT5-Base tiền huấn luyện. Cell 2 lấy commit mới nhất đã push lên `origin/main` khi `target_commit=""`, rồi cố định commit cho cả phiên; có thể điền hash để chọn phiên bản cụ thể. Muốn thử cấu hình khác, sửa `configs/train.json`, commit/push trước khi bắt đầu run mới. Không upload file mã thủ công.
 

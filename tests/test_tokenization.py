@@ -65,8 +65,8 @@ class TruncationTests(unittest.TestCase):
                 "byte_count": len(content),
                 "sha256": hashlib.sha256(content).hexdigest(),
             }
-        manifest_dir = root / "data/manifests"
-        manifest_dir.mkdir(parents=True)
+        manifest_dir = root / "data/manifests/full"
+        manifest_dir.mkdir(parents=True, exist_ok=True)
         processed = {
             "dataset": config["dataset"],
             "seed": config["seed"],
@@ -74,7 +74,7 @@ class TruncationTests(unittest.TestCase):
             "files": files,
             "test_lock": {"locked": True},
         }
-        (manifest_dir / "wikilingua_subsets.json").write_text(json.dumps(subset), encoding="utf-8")
+        (manifest_dir / "wikilingua_full.json").write_text(json.dumps(subset), encoding="utf-8")
         (manifest_dir / "wikilingua_processed.json").write_text(json.dumps(processed), encoding="utf-8")
         return root, config_path, rows
 
@@ -107,7 +107,7 @@ class TruncationTests(unittest.TestCase):
     def test_train_validation_only_and_original_files_unchanged(self):
         with tempfile.TemporaryDirectory() as directory:
             root, config_path, rows = self.prepare_files(directory)
-            paths = list((root / "data/processed").glob("*.jsonl"))
+            paths = list((root / "data/processed/full").glob("*.jsonl"))
             original_bytes = {}
             for path in paths:
                 original_bytes[path] = path.read_bytes()
@@ -119,7 +119,7 @@ class TruncationTests(unittest.TestCase):
             self.assertEqual(report["splits"]["validation"]["document"]["truncated_count"], 0)
             self.assertEqual(report["splits"]["validation"]["summary"]["truncated_count"], 1)
             self.assertEqual(tokenizer.call_count, 8)
-            self.assertFalse((root / "data/processed/test.jsonl").exists())
+            self.assertFalse((root / "data/processed/full/test.jsonl").exists())
             self.assertIs(report["checks"]["test_content_read"], False)
             self.assertEqual(report["decision_status"], "pending_review")
             for path in paths:
@@ -150,7 +150,7 @@ class TruncationTests(unittest.TestCase):
     def test_changed_file_hash_is_rejected_before_tokenizer_load(self):
         with tempfile.TemporaryDirectory() as directory:
             root, config_path, rows = self.prepare_files(directory)
-            path = root / "data/processed/train.jsonl"
+            path = root / "data/processed/full/train.jsonl"
             path.write_bytes(path.read_bytes() + b" ")
             module, tokenizer, auto = self.tokenizer_module()
             with patch.dict(sys.modules, {"transformers": module}):
@@ -161,9 +161,9 @@ class TruncationTests(unittest.TestCase):
     def test_wrong_ids_are_rejected_even_with_updated_file_hash(self):
         with tempfile.TemporaryDirectory() as directory:
             root, config_path, rows = self.prepare_files(directory)
-            path = root / "data/processed/train.jsonl"
+            path = root / "data/processed/full/train.jsonl"
             path.write_bytes(path.read_bytes().replace(b'"id": "a"', b'"id": "z"'))
-            manifest_path = root / "data/manifests/wikilingua_processed.json"
+            manifest_path = root / "data/manifests/full/wikilingua_processed.json"
             processed = json.loads(manifest_path.read_text(encoding="utf-8"))
             processed["files"]["train"]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
             manifest_path.write_text(json.dumps(processed), encoding="utf-8")

@@ -553,7 +553,7 @@ class PreparedDatasetTests(unittest.TestCase):
             repeated = export_prepared_datasets(subsets, manifest, stats, directory)
             self.assertEqual(processed, repeated)
             self.assertTrue(all(verify_prepared_datasets(directory, processed, manifest).values()))
-            path = Path(directory) / "data/processed/train.jsonl"
+            path = Path(directory) / "data/processed/full/train.jsonl"
             with path.open(encoding="utf-8") as stream:
                 rows = []
                 for line in stream:
@@ -581,7 +581,7 @@ class PreparedDatasetTests(unittest.TestCase):
         subsets, manifest = self.make_data()
         stats, tokenizer, auto = self.make_statistics(subsets, manifest)
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "data/processed/test.jsonl"
+            path = Path(directory) / "data/processed/full/test.jsonl"
             path.parent.mkdir(parents=True)
             path.write_bytes(b"existing content")
             with self.assertRaisesRegex(ValueError, "Refusing to overwrite"):

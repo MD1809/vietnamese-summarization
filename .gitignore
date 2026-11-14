@@ -4,6 +4,7 @@
 # Datasets and generated artifacts
 /data/raw/
 /data/processed/
+/data/manifests/full/
 /data/tokenized/
 /checkpoints/
 /outputs/
