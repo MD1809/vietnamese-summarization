@@ -1,0 +1,174 @@
+{
+  "run_id": "vit5_finetuning_20261114_083823_007233",
+  "run_status": "completed",
+  "checkpoint": "/content/drive/.shortcut-targets-by-id/1pYCC4s6c4UIpyf6pvB0tIsvIlJTL48zs/vietnamese-summarization/checkpoints/vit5_finetuning_20261114_083823_007233/best",
+  "best_epoch": 2,
+  "best_global_step": 3902,
+  "best_validation_loss": 1.9117193787786906,
+  "train_config": {
+    "config_status": "initial",
+    "model": {
+      "id": "VietAI/vit5-base",
+      "revision": "2209a38d735ede63e88f5aa52bcdc11a05a37b85"
+    },
+    "dataset": {
+      "id": "esdurmus/wiki_lingua",
+      "revision": "ea3db3510cbd34d0f8dc612419ae40e4732f3b40",
+      "language": "vietnamese"
+    },
+    "paths": {
+      "train_file": "data/processed/full/train.jsonl",
+      "validation_file": "data/processed/full/validation.jsonl",
+      "test_file": "data/processed/full/test.jsonl",
+      "subset_manifest": "data/manifests/full/wikilingua_full.json",
+      "processed_manifest": "data/manifests/full/wikilingua_processed.json",
+      "output_dir": "outputs",
+      "checkpoint_dir": "checkpoints",
+      "statistics_manifest": "data/manifests/full/wikilingua_statistics.json"
+    },
+    "seed": 42,
+    "task_prefix": "",
+    "max_source_length": 1024,
+    "max_target_length": 128,
+    "token_limits_decision": {
+      "status": "approved",
+      "selected_report": "data/manifests/full/wikilingua_truncation_1024_128.json",
+      "reason": "Keep source/target limits 1024/128; regenerate truncation statistics on the full train/validation splits during data preparation. Previous percentages apply only to the small subset.",
+      "training_memory_verified": true,
+      "training_memory_verification_scope": "Tesla T4 fp32 batch 1; 16 real train steps and one padded 1024/128 step completed; accumulation and full training loop not yet verified",
+      "training_memory_verification_report": "outputs/vit5_finetuning_20261105_165225_962607/resource_check.json"
+    },
+    "batch_size": 1,
+    "gradient_accumulation_steps": 8,
+    "max_grad_norm": 1.0,
+    "learning_rate": 5e-05,
+    "num_epochs": 10,
+    "early_stopping": {
+      "patience": 3,
+      "min_delta": 0.0
+    },
+    "optimizer": "AdamW",
+    "weight_decay": 0.01,
+    "precision": "fp32",
+    "checkpoint_selection": {
+      "metric": "validation_loss",
+      "mode": "min"
+    }
+  },
+  "decision": {
+    "run_id": "vit5_finetuning_20261114_083823_007233",
+    "comparison_id": "decoding_comparison_20261114_184049_880794",
+    "selected_method": "beam",
+    "generation_config": {
+      "num_beams": 4,
+      "max_new_tokens": 128,
+      "do_sample": false,
+      "no_repeat_ngram_size": 4
+    },
+    "textrank_config": {
+      "similarity": "unique shared Unicode units divided by log sentence lengths",
+      "token_unit": "Unicode letter/number units, usually Vietnamese syllables",
+      "remove_stopwords": false,
+      "damping": 0.85,
+      "tolerance": 1e-06,
+      "max_iterations": 100,
+      "convergence_measure": "L1 difference between consecutive score vectors",
+      "dangling_nodes": "redistribute score uniformly",
+      "duplicate_handling": "keep first sentence after NFC, whitespace and lowercase",
+      "tie_break": "earlier source sentence",
+      "selection": "greedy whole sentences within content-token budget; restore source order",
+      "overflow_fallback": "truncate highest-ranked sentence only if no whole sentence fits",
+      "single_unit_similarity": "shared unit count when both log lengths are zero"
+    },
+    "selection_basis": "user selection after validation; before reading test",
+    "created_at_utc": "2026-11-15T01:10:27.113129+00:00"
+  },
+  "generation_config": {
+    "num_beams": 4,
+    "max_new_tokens": 128,
+    "do_sample": false,
+    "no_repeat_ngram_size": 4
+  },
+  "textrank_config": {
+    "similarity": "unique shared Unicode units divided by log sentence lengths",
+    "token_unit": "Unicode letter/number units, usually Vietnamese syllables",
+    "remove_stopwords": false,
+    "damping": 0.85,
+    "tolerance": 1e-06,
+    "max_iterations": 100,
+    "convergence_measure": "L1 difference between consecutive score vectors",
+    "dangling_nodes": "redistribute score uniformly",
+    "duplicate_handling": "keep first sentence after NFC, whitespace and lowercase",
+    "tie_break": "earlier source sentence",
+    "selection": "greedy whole sentences within content-token budget; restore source order",
+    "overflow_fallback": "truncate highest-ranked sentence only if no whole sentence fits",
+    "single_unit_similarity": "shared unit count when both log lengths are zero"
+  },
+  "source": {
+    "git_commit": "54847904cf41b3a842906f3f1260921afbcba978",
+    "runtime_source_sha256": {
+      "src/evaluate.py": "e64cbd0d207dfc7649b9db2b5a4e49d777f2a34e30a45710b4279571b948d60a",
+      "src/inference.py": "be4758ee55ec906994dfe405563f5913a3c5966f42755c10e76abc2ffbae6e31",
+      "src/metrics.py": "05ae22100633a133a46a37174cf879f32d811b39fee4e0ff5fe5397982351df1",
+      "src/tokenization.py": "8a4c5ee1d371a79270646049604a916e9c74847fbb33af02de50886e4904e518",
+      "src/data.py": "583830591f1dc5708bfb5fb75aaea7af98418231e103d73ad00f3ff80f9445ec",
+      "src/preprocessing.py": "a4034a7215969d86a6f2063aced089cb379968f9e9c4ebf0d5affd66a2033742",
+      "src/utils.py": "0d3fc7cbb9a4d8e9f778b17159a17e8e4aa753a607377c8a8a6044b2ca65a38c",
+      "src/train.py": "d99509ec514412c7f8b84025d859cb2f3973d6e411ecbcd6dfdac42482f62913",
+      "src/textRank.py": "e5d04bafbafd8f6ee541182a1355b2189ee4ab3c6775b6df89874a52539170c2",
+      "notebooks/vietnamese_summarization_evaluation.ipynb": "761fefe068fd0153b2a91e949731d4297de8cd60990409efe99468e47c2588e3"
+    }
+  },
+  "test_metadata": {
+    "path": "data/processed/full/test.jsonl",
+    "pair_count": 1942,
+    "byte_count": 7511108,
+    "sha256": "578d8371d3cfda47fd6a577c3605dc4e058b772470f4e9ac3a7dbe38efb1d38c"
+  },
+  "metric_settings": {
+    "rouge_types": [
+      "rouge1",
+      "rouge2",
+      "rougeL"
+    ],
+    "unicode_normalization": "NFC",
+    "lowercase": true,
+    "non_letter_number_handling": "replace with spaces",
+    "token_unit": "whitespace-separated Unicode letters and numbers",
+    "use_stemmer": false,
+    "rouge_l_variant": "rougeL",
+    "aggregation": "mean of per-sample F1; multiply by 100 for percentage scores",
+    "empty_token_sequence_score": 0.0
+  },
+  "results": {
+    "textrank": {
+      "sample_count": 1942,
+      "mean_f1": {
+        "rouge1": 0.242609889216017,
+        "rouge2": 0.0961401308924093,
+        "rougeL": 0.1629232773019297
+      },
+      "mean_f1_percent": {
+        "rouge1": 24.2609889216017,
+        "rouge2": 9.614013089240931,
+        "rougeL": 16.29232773019297
+      }
+    },
+    "vit5": {
+      "sample_count": 1942,
+      "mean_f1": {
+        "rouge1": 0.335915080368386,
+        "rouge2": 0.18219052716032627,
+        "rougeL": 0.28747070410464437
+      },
+      "mean_f1_percent": {
+        "rouge1": 33.591508036838604,
+        "rouge2": 18.21905271603263,
+        "rougeL": 28.74707041046444
+      }
+    }
+  },
+  "test_previously_inspected_in_project": true,
+  "test_used_for_tuning_this_evaluation": false,
+  "token_budget_note": "TextRank content tokens; ViT5 new tokens may include EOS"
+}
