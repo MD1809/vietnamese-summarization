@@ -4,13 +4,34 @@ Xây dựng hệ thống tóm tắt sinh văn bản tiếng Việt bằng cách 
 
 Dự án sử dụng PyTorch để huấn luyện trên Google Colab, đánh giá bằng ROUGE-1, ROUGE-2 và ROUGE-L, so sánh với baseline trích xuất và xây dựng giao diện demo bằng Gradio.
 
+## Cấu hình mới và trạng thái kiểm chứng
+
+Cấu hình mới tham khảo [notebook VietAI/ViT5](https://github.com/vietai/ViT5/blob/151850bb988f8364c5499fbde241a998a6695c9d/examples/finetune_huggingface_example.ipynb), giữ vòng lặp PyTorch tự viết. [Checklist triển khai và kiểm tra thủ công](docs/vit5_configuration_checklist.md).
+
+| Thông số | Run mới |
+| --- | --- |
+| Model / seed | ViT5-base, revision cố định / 42 |
+| Nguồn / nhãn đích | 1024 / 256 token |
+| Batch / accumulation | 1 / 4, batch hiệu dụng 4 |
+| Optimizer | AdamW, nhóm không decay cho bias/normalization |
+| LR / scheduler / warmup | `1e-5` / linear / 5% tổng bước dự kiến |
+| Weight decay / clipping | 0.01 / max grad norm 1.0 |
+| Precision | AMP FP16 khi train; trọng số chính, validation và inference FP32 |
+| Epoch / early stopping | Tối đa 30 / patience 3, min delta 0 |
+| Checkpoint | Best theo validation loss; last gồm optimizer, scheduler, scaler và RNG/DataLoader |
+| Decoding làm mốc | Greedy, `max_length=256`, không sampling, không chặn lặp |
+
+Đây chưa phải tái lập đầy đủ thí nghiệm VietAI: batch vật lý 1 thay vì 4; giữ validation, early stopping, split nhóm và ROUGE Unicode của dự án. `max_length` bao gồm decoder start và EOS; `max_new_tokens` của các báo cáo cũ chỉ tính token mới, gồm EOS. TextRank dùng ngân sách content-token bằng giới hạn nhãn, nên không coi hai ngân sách là đồng nhất tuyệt đối.
+
+**Chưa chạy test, kiểm tra bộ nhớ T4, train hoặc evaluation cho cấu hình mới.** Chỉ rà soát mã và cú pháp/JSON. Metadata `pending_manual_verification` và các ô chưa đánh dấu trong checklist thể hiện việc còn chờ chạy thật; kết quả bên dưới thuộc run cũ.
+
 ## Chuẩn bị dữ liệu
 
 Mở `notebooks/vietnamese_summarization_data_preparation.ipynb` trên Google Colab bằng runtime thường, không cần GPU. Dùng phiên mới và chạy lần lượt chín cell code từ trên xuống; các cell Markdown giải thích ngay trước từng phần. Nếu Colab yêu cầu khởi động lại sau khi cài thư viện, khởi động lại rồi chạy hai cell code đầu và tiếp tục từ cell import/cấu hình, không cần cài lại ngay.
 
 Notebook lấy commit mới nhất trên `origin/main` khi `target_commit=""`, dùng cache WikiLingua trên Drive, chuẩn hóa/làm sạch và giữ toàn bộ các tập đã chia theo nhóm trong `wikilingua_splits.json`: **15.601 train / 2.034 validation / 1.942 test**. Không lấy tập con và không chia lại dữ liệu. Thống kê token chỉ dùng train; báo cáo cắt token dùng train/validation.
 
-Đầu ra trên Drive: `MyDrive/vietnamese-summarization/data/processed/full/` chứa `train.jsonl`, `validation.jsonl`, `test.jsonl`; `data/manifests/full/` chứa `wikilingua_full.json`, manifest nội dung/hash, thống kê và báo cáo cắt token 1024/128 mới. Đây là dữ liệu mặc định trong `configs/train.json`, không phụ thuộc run cũ. Đường dẫn mới tránh xung đột với các file tập con đã khóa trên Drive. File đã có phải khớp nội dung; không ghi đè dữ liệu khác. Test chỉ dùng cho đánh giá cuối cùng.
+Đầu ra trên Drive: `MyDrive/vietnamese-summarization/data/processed/full/` chứa `train.jsonl`, `validation.jsonl`, `test.jsonl`; `data/manifests/full/` chứa `wikilingua_full.json`, manifest nội dung/hash, thống kê và báo cáo cắt token 1024/256 (`wikilingua_truncation_1024_256.json`). Đây là dữ liệu mặc định trong `configs/train.json`, không phụ thuộc run cũ. File đã có phải khớp nội dung; không ghi đè dữ liệu khác. Test chỉ dùng cho đánh giá cuối cùng.
 
 Nơi lưu thống nhất: mã nguồn, notebook và cấu hình nằm trên GitHub; dữ liệu và kết quả chạy nằm trên Google Drive. Các đường dẫn tương đối trong `configs/train.json` được ghép với `drive_root`, không phải thư mục clone mã nguồn `/content/vietnamese-summarization`. Notebook tự tạo các thư mục cần thiết:
 
@@ -27,21 +48,21 @@ MyDrive/vietnamese-summarization/
 └── outputs/<run_id>/
 ```
 
-Không cần chép JSONL, manifest đầy đủ hoặc trọng số vào repository. `.gitignore` loại các thư mục dữ liệu phát sinh này khỏi Git nếu chúng được tải về máy. Manifest tập con cũ đang có trong repository chỉ là hồ sơ lịch sử; run đầy đủ dùng manifest mới trên Drive.
+Không cần chép JSONL, manifest đầy đủ hoặc trọng số vào repository. `.gitignore` loại các thư mục dữ liệu phát sinh này khỏi Git nếu chúng được tải về máy. Manifest nguồn/làm sạch/chia nhóm được giữ trong repository để đối chiếu; manifest đầy đủ và dữ liệu phát sinh nằm trên Drive.
 
 ## Huấn luyện một run mới
 
 Mở `notebooks/vietnamese_summarization_train.ipynb` trên Colab với GPU T4. Notebook có 10 cell code: kết nối/lấy mã/cài thư viện → tokenize/DataLoader → tải ViT5-Base và AdamW → vòng lặp epoch/validation loss/last-best → log/biểu đồ/phân tích và tải ZIP. Sinh tóm tắt, so sánh decoding và chấm ROUGE nằm trong notebook evaluation riêng.
 
-Trước run đầy đủ đầu tiên, commit/push thay đổi và chạy notebook chuẩn bị dữ liệu mới trên Drive. Sau đó mở notebook train đã cập nhật và chạy từ đầu. Notebook hiện lưu output của run đầy đủ đã hoàn tất; notebook evaluation giữ mặc định `evaluate_test=False` cho lần chạy sau.
+Trước run mới, push thay đổi và chạy notebook chuẩn bị dữ liệu trên Drive. Sau đó mở notebook train đã cập nhật và chạy từ đầu. Output cũ trong các notebook đã được xóa; báo cáo lịch sử trong `reports/` được giữ nguyên. Notebook evaluation giữ mặc định `evaluate_test=False`.
 
 Mặc định `resume_run_id=""` tạo run mới từ ViT5-Base tiền huấn luyện. Cell 2 lấy commit mới nhất đã push lên `origin/main` khi `target_commit=""`, rồi cố định commit cho cả phiên; có thể điền hash để chọn phiên bản cụ thể. Muốn thử cấu hình khác, sửa `configs/train.json`, commit/push trước khi bắt đầu run mới. Không upload file mã thủ công.
 
-Cell 7 chứa vòng lặp epoch; `src.train.train_epoch` và `train_accumulated_group` thực hiện forward/loss/backward, tích lũy gradient, clipping và optimizer.step. Sau mỗi epoch chạy validation loss, chọn best theo loss nhỏ nhất và lưu last để resume. Cấu hình hiện tại: nguồn/đích 1024/128, batch 1, accumulation 8, AdamW learning rate 5e-5 và 10 epoch. Dữ liệu JSONL/manifest trên Drive phải đúng tập đã chuẩn bị; không đổi dữ liệu hoặc siêu tham số giữa run đang resume.
+Cell 7 chứa vòng lặp epoch; `src.train.train_epoch` và `train_accumulated_group` thực hiện forward/loss/backward, tích lũy gradient, clipping và optimizer.step. Sau mỗi epoch chạy validation loss, chọn best theo loss nhỏ nhất và lưu last để resume. Cấu hình hiện tại: nguồn/đích 1024/256, batch 1, accumulation 4, AdamW learning rate 1e-5, warmup 5%, linear scheduler, AMP FP16 và tối đa 30 epoch. Dữ liệu JSONL/manifest trên Drive phải đúng tập đã chuẩn bị; không đổi dữ liệu hoặc siêu tham số giữa run đang resume.
 
-Early stopping cho run mới được cấu hình trong `configs/train.json`: `early_stopping.patience=3`, `min_delta=0.0`. Số 10 epoch là giới hạn tối đa; dừng sau 3 epoch liên tiếp mà validation loss không giảm. Với `min_delta` lớn hơn 0, loss phải giảm hơn ngưỡng này so với mốc cải thiện đáng kể gần nhất để đặt lại bộ đếm; checkpoint best vẫn luôn chọn loss nhỏ nhất. Lịch sử và last được lưu trước khi dừng, summary ghi `stopped_early` và `stop_reason`; đánh giá/sinh tóm tắt tiếp tục dùng best. Muốn dùng thay đổi trên Colab, commit/push mã và mở notebook cập nhật cho run mới; run cũ vẫn dùng commit/cấu hình gốc, không tự bật early stopping.
+Early stopping cho run mới được cấu hình trong `configs/train.json`: `early_stopping.patience=3`, `min_delta=0.0`. Số 30 epoch là giới hạn tối đa; dừng sau 3 epoch liên tiếp mà validation loss không giảm. Với `min_delta` lớn hơn 0, loss phải giảm hơn ngưỡng này so với mốc cải thiện đáng kể gần nhất để đặt lại bộ đếm; checkpoint best vẫn luôn chọn loss nhỏ nhất. Lịch sử và last được lưu trước khi dừng, summary ghi `stopped_early` và `stop_reason`; đánh giá/sinh tóm tắt tiếp tục dùng best. Run cũ vẫn dùng commit/cấu hình gốc.
 
-Nếu Colab ngắt, nhập đúng run ID vào `resume_run_id` ở cell 1, để `target_commit=""` ở cell 2 tự lấy commit của hồ sơ run rồi chạy lại từ đầu. Khôi phục model, optimizer, tiến độ và RNG/DataLoader từ last cuối epoch; epoch đang dở được chạy lại. Bộ đếm early stopping được lưu trong last; run đã đạt patience sẽ không chạy thêm epoch khi resume. Các file checkpoint phải còn đầy đủ. Nếu thư viện yêu cầu khởi động lại sau cài đặt, chạy lại cell 1, 2 rồi tiếp tục từ cell 4.
+Nếu Colab ngắt, nhập đúng run ID vào `resume_run_id` ở cell 1, để `target_commit=""` ở cell 2 tự lấy commit của hồ sơ run rồi chạy lại từ đầu. Khôi phục model, optimizer, scheduler, AMP scaler, tiến độ và RNG/DataLoader từ last cuối epoch; epoch đang dở được chạy lại. Bộ đếm early stopping được lưu trong last; run đã đạt patience sẽ không chạy thêm epoch khi resume. Các file checkpoint phải còn đầy đủ. Nếu thư viện yêu cầu khởi động lại sau cài đặt, chạy lại cell 1, 2 rồi tiếp tục từ cell 4.
 
 Kết quả nằm ở `Drive/outputs/<run_id>/`; trọng số ở `Drive/checkpoints/<run_id>/best/` và `last/`. Cell 10 tải ZIP training_results gồm config.json, bản sao manifest, CSV/summary, phân tích và figures/training_loss.png; không có trọng số. Giải nén giữ nguyên cấu trúc vào `reports/training_runs/<run_id>/`. ZIP là bản sao metadata/kết quả, không thay thế best/last trên Drive; cần đủ dung lượng cho cả checkpoint hiện tại và bản tạm khi lưu.
 
@@ -61,13 +82,19 @@ Nếu ngắt phiên sau validation: điền đúng run ID và Comparison ID ở 
 
 Notebook train đã được người thực hiện rút gọn còn cell 1–10; các kiểm thử train và evaluation được tách theo đúng nhiệm vụ. Dùng notebook evaluation để đánh giá mới; validation loss chọn best vẫn được giữ trong vòng huấn luyện.
 
-## Thử chống lặp trên validation
+## Chọn decoding và kiểm tra thủ công
 
-Notebook evaluation hiện thử `no_repeat_ngram_size=4` trong cell 4, ghi vào generation.json tạm và truyền thực sự tới model.generate. Giữ nguyên checkpoint và nguồn/đích 1024/128, không dùng repetition_penalty trong thử nghiệm đầu. Để so với mốc hiện tại, chọn run `vit5_finetuning_20261113_071230_169031`, chạy cell 1–5 trong phiên Colab T4 mới sau khi mã đã commit/push. Giữ evaluate_test=False ở cell 6; chưa chạy test hoặc đồng bộ demo bằng cấu hình thử khi chưa đọc kết quả validation. Muốn chạy lại mốc không chặn lặp, đổi giá trị ở cell 4 thành 0.
+Notebook evaluation đọc cấu hình sinh của chính run đã chọn, không tự bật chặn lặp. Run mới có mốc greedy không chặn lặp; cell validation so thêm beam 4. Nếu muốn thử `no_repeat_ngram_size=4`, sửa cấu hình tạm ở cell 4, chạy lại validation và đọc ví dụ trước khi chốt. Quy tắc đếm lặp câu chỉ phát hiện câu trùng nguyên văn sau chuẩn hóa, không phát hiện mọi kiểu lặp ngữ nghĩa.
 
-Cell 5 đo cả ViT5 greedy/beam với chặn lặp và TextRank, lưu vào thư mục comparison mới. Mỗi candidate có sentence_repetition gồm số mẫu có câu lặp, tỷ lệ và tổng lần câu bị lặp thêm. Quy tắc đo: chuẩn hóa NFC/khoảng trắng/chữ thường rồi đếm câu trùng nguyên văn; không phát hiện mọi kiểu lặp ngữ nghĩa. Mốc cũ cùng run có 171/201 greedy và 186/201 beam bị lặp theo quy tắc này. So sánh greedy mới với greedy cũ, ROUGE và đọc ví dụ để kiểm tra đủ ý/đúng thông tin; đề xuất greedy/beam chỉ dựa ROUGE-L không thay thế nhận xét chất lượng.
+Thứ tự chạy thủ công sau khi push các commit mới:
 
-Báo cáo/checkpoint/hồ sơ cũ giữ nguyên, không đổi generation.json gốc trong configs. Cách sinh đã đổi source hash nên demo theo mã mới sẽ từ chối báo cáo cũ; chỉ chuyển demo sang cấu hình chống lặp sau khi chốt trên validation và lưu lượt đánh giá phù hợp. Nếu cần dùng demo cũ để đối chiếu, giữ phiên bản mã 6184d14 với báo cáo cũ. Không coi kiểm thử bằng mock là bằng chứng đã giảm lặp hoặc tăng chất lượng trên dữ liệu thật.
+1. Mở phiên mới, chạy notebook chuẩn bị dữ liệu; đọc báo cáo truncation 1024/256 trên train/validation.
+2. Mở Colab T4, chạy notebook train với `resume_run_id=""`. Theo dõi loss hữu hạn, peak VRAM, LR và số bước AMP bỏ qua; kiểm tra resume đúng last nếu cần. Warmup theo tổng bước của 30 epoch, không tính lại khi early stopping hoặc resume.
+3. Chạy evaluation trên validation, giữ `evaluate_test=False`. Chốt greedy/beam và chặn lặp nếu có rồi mới bật test. Test đã từng được xem ở các thử nghiệm trước, không coi là tập hoàn toàn chưa từng quan sát.
+4. Chạy demo bằng run/lượt đánh giá mới. Source hash của mã inference phải khớp báo cáo; các báo cáo cũ vẫn đọc được nhưng demo sẽ từ chối nếu mã thuật toán khác.
+5. So run mới với run cũ trên cùng split và cùng decoding nếu muốn đánh giá riêng tác động của huấn luyện. Chưa có ROUGE hoặc best epoch mới để báo cáo.
+
+`global_step` đếm cập nhật optimizer thành công. Nhóm AMP bị tràn gradient vẫn được tính vào số nhóm đã xử lý, nhưng không tăng scheduler/global step. CSV có LR cho bước tiếp theo, số cập nhật/thử/bỏ qua và peak VRAM từng epoch. Không resume checkpoint cũ bằng cấu hình mới; run cũ cần commit/cấu hình gốc. Báo cáo/checkpoint/hồ sơ cũ được giữ nguyên.
 
 ## Chạy demo từ phiên Colab mới
 
