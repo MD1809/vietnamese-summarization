@@ -21,8 +21,6 @@ def load_vit5_model(config_path="configs/train.json"):
     from transformers import AutoModelForSeq2SeqLM
 
     config = load_train_config(config_path)
-    if config["precision"] != "fp32":
-        raise ValueError("G4.1 expects the approved fp32 configuration")
     if not torch.cuda.is_available():
         raise RuntimeError("Lỗi: GPU chưa khả dụng để tải ViT5.")
     model = AutoModelForSeq2SeqLM.from_pretrained(
@@ -295,12 +293,16 @@ def restore_random_state(state):
 
 def save_training_checkpoint(
     model, tokenizer, optimizer, checkpoint_dir, progress, config_path="configs/train.json",
-    train_loader=None,
+    train_loader=None, scheduler=None, scaler=None,
 ):
     from pathlib import Path
     import torch
 
     config = load_train_config(config_path)
+    if (config.get("lr_scheduler_type", "constant") == "linear") != (scheduler is not None):
+        raise ValueError("Checkpoint scheduler must match the training configuration")
+    if (config["precision"] == "fp16") != (scaler is not None):
+        raise ValueError("Checkpoint scaler must match the training precision")
     for key in ["completed_epochs", "global_step"]:
         if type(progress.get(key)) is not int or progress[key] < 0:
             raise ValueError("Checkpoint progress must contain nonnegative integer counters")
@@ -317,19 +319,28 @@ def save_training_checkpoint(
         "optimizer_state_dict": optimizer_state,
         "random_state": capture_random_state(),
     }
+    if scheduler is not None:
+        if scheduler.last_epoch != progress["global_step"]:
+            raise ValueError("Scheduler position does not match checkpoint global_step")
+        state["scheduler_state_dict"] = scheduler.state_dict()
+    if scaler is not None:
+        state["scaler_state_dict"] = scaler.state_dict()
     if train_loader is not None:
         state["train_loader_state"] = capture_train_loader_state(train_loader)
     torch.save(state, checkpoint_dir / "training_state.pt")
 
 
-def load_training_checkpoint(checkpoint_dir, config_path="configs/train.json", train_loader=None):
+def load_training_checkpoint(
+    checkpoint_dir, config_path="configs/train.json", train_loader=None,
+    return_training_components=False,
+):
     from pathlib import Path
     import torch
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
     config = load_train_config(config_path)
-    if config["precision"] != "fp32" or not torch.cuda.is_available():
-        raise RuntimeError("Checkpoint check requires CUDA and the approved fp32 configuration")
+    if not torch.cuda.is_available():
+        raise RuntimeError("Checkpoint loading requires CUDA")
     checkpoint_dir = Path(checkpoint_dir)
     state = torch.load(
         checkpoint_dir / "training_state.pt",
@@ -349,6 +360,17 @@ def load_training_checkpoint(checkpoint_dir, config_path="configs/train.json", t
     model = model.to(device="cuda:0", dtype=torch.float32)
     model.eval()
     optimizer = create_optimizer(model, config_path)
+    needs_scheduler = config.get("lr_scheduler_type", "constant") == "linear"
+    needs_scaler = config["precision"] == "fp16"
+    if (needs_scheduler or needs_scaler) and not return_training_components:
+        raise ValueError("Request return_training_components=True to resume scheduler/AMP state")
+    # Construct the scheduler before restoring optimizer LR values.
+    scheduler = create_scheduler(optimizer, train_loader, config_path) if needs_scheduler else None
+    scaler = create_grad_scaler(config_path) if needs_scaler else None
+    if needs_scheduler != ("scheduler_state_dict" in state):
+        raise ValueError("Checkpoint scheduler state does not match configuration")
+    if needs_scaler != ("scaler_state_dict" in state):
+        raise ValueError("Checkpoint scaler state does not match precision")
     saved_optimizer = state["optimizer_state_dict"]
     optimizer.load_state_dict(saved_optimizer)
     restored_optimizer = optimizer.state_dict()
@@ -367,6 +389,20 @@ def load_training_checkpoint(checkpoint_dir, config_path="configs/train.json", t
                 raise ValueError("Optimizer state tensor was not restored: " + key)
             tensor_count = tensor_count + 1
         step_values.add(int(restored_values["step"].item()))
+    if step_values != {state["progress"]["global_step"]}:
+        raise ValueError("Restored optimizer steps do not match checkpoint progress")
+    if scheduler is not None:
+        saved_scheduler = state["scheduler_state_dict"]
+        for key in ["total_training_steps", "warmup_steps"]:
+            if saved_scheduler.get(key) != getattr(scheduler, key):
+                raise ValueError("Checkpoint schedule horizon does not match training data/config")
+        scheduler.load_state_dict(saved_scheduler)
+        if scheduler.last_epoch != state["progress"]["global_step"]:
+            raise ValueError("Restored scheduler position does not match global_step")
+        if scheduler.get_last_lr() != [group["lr"] for group in optimizer.param_groups]:
+            raise ValueError("Restored scheduler learning rates do not match optimizer")
+    if scaler is not None:
+        scaler.load_state_dict(state["scaler_state_dict"])
     restore_random_state(state["random_state"])
     if train_loader is not None:
         restore_train_loader_state(train_loader, state["train_loader_state"])
@@ -381,7 +417,11 @@ def load_training_checkpoint(checkpoint_dir, config_path="configs/train.json", t
         "train_loader_state_restored": train_loader is not None,
         "model_device": str(next(model.parameters()).device),
         "model_dtype": str(next(model.parameters()).dtype),
+        "scheduler_state_restored": scheduler is not None,
+        "scaler_state_restored": scaler is not None,
     }
+    if return_training_components:
+        return model, tokenizer, optimizer, dict(state["progress"]), report, scheduler, scaler
     return model, tokenizer, optimizer, dict(state["progress"]), report
 
 
@@ -544,32 +584,56 @@ def create_training_run(project_root, drive_root, allow_uncommitted=False):
     return report
 
 
-def train_accumulated_group(model, batches, optimizer, config_path="configs/train.json", scheduler=None):
+def create_grad_scaler(config_path="configs/train.json"):
+    import torch
+
+    config = load_train_config(config_path)
+    if config["precision"] == "fp16":
+        return torch.amp.GradScaler("cuda")
+    return None
+
+
+def training_autocast(config):
+    from contextlib import nullcontext
+    import torch
+
+    if config["precision"] == "fp32":
+        return nullcontext()
+    if config["precision"] == "bf16" and not torch.cuda.is_bf16_supported():
+        raise RuntimeError("This GPU does not support bf16 training")
+    dtype = torch.float16 if config["precision"] == "fp16" else torch.bfloat16
+    return torch.autocast(device_type="cuda", dtype=dtype)
+
+
+def train_accumulated_group(
+    model, batches, optimizer, config_path="configs/train.json", scheduler=None, scaler=None,
+):
     import math
     import torch
 
     config = load_train_config(config_path)
-    if len(batches) == 0 or len(batches) > config["gradient_accumulation_steps"]:
-        raise ValueError("Accumulation group must contain 1 to the configured number of batches")
-    max_grad_norm = config.get("max_grad_norm")
-    if type(max_grad_norm) not in [int, float] or not math.isfinite(max_grad_norm) or max_grad_norm <= 0:
-        raise ValueError("Accumulation requires a finite positive max_grad_norm")
+    if not 1 <= len(batches) <= config["gradient_accumulation_steps"]:
+        raise ValueError("Accumulation group size is outside the configured range")
+    max_grad_norm = config["max_grad_norm"]
     parameter = next(model.parameters())
-    if parameter.dtype != torch.float32 or config["precision"] != "fp32":
-        raise ValueError("Accumulation expects the approved fp32 configuration")
+    if parameter.dtype != torch.float32:
+        raise ValueError("AMP requires FP32 master parameters")
+    if (config["precision"] == "fp16") != (scaler is not None):
+        raise ValueError("fp16 training requires a persistent GradScaler; other precisions do not")
+    if config.get("lr_scheduler_type", "constant") == "linear" and scheduler is None:
+        raise ValueError("Linear training requires a persistent scheduler")
     token_counts = []
     sample_ids = []
     for batch in batches:
         inputs = batch["model_inputs"]
         if set(inputs) != {"input_ids", "attention_mask", "labels"}:
             raise ValueError("Accumulation expects source IDs, mask and original labels only")
-        if inputs["input_ids"].shape[0] != 1 or inputs["labels"].shape[0] != 1 or len(batch["sample_ids"]) != 1:
-            raise ValueError("Accumulation expects physical batch size 1")
-        count = 0
-        for row in inputs["labels"].tolist():
-            for token_id in row:
-                if token_id != -100:
-                    count = count + 1
+        size = inputs["input_ids"].shape[0]
+        if not 1 <= size <= config["batch_size"] or inputs["labels"].shape[0] != size:
+            raise ValueError("Microbatch size does not match the configuration")
+        if len(batch["sample_ids"]) != size:
+            raise ValueError("Microbatch metadata count does not match its tensors")
+        count = int((inputs["labels"] != -100).sum().item())
         if count == 0:
             raise ValueError("Each accumulation batch requires valid target tokens")
         token_counts.append(count)
@@ -580,68 +644,64 @@ def train_accumulated_group(model, batches, optimizer, config_path="configs/trai
     losses = []
     loss_weights = []
     for index, batch in enumerate(batches):
-        model_inputs = {}
-        for field in ["input_ids", "attention_mask", "labels"]:
-            model_inputs[field] = batch["model_inputs"][field].to(parameter.device)
-        outputs = model(
-            input_ids=model_inputs["input_ids"],
-            attention_mask=model_inputs["attention_mask"],
-            labels=model_inputs["labels"],
-            return_dict=True,
-            use_cache=False,
-        )
-        loss = outputs.loss
-        if loss is None or len(loss.shape) != 0 or not loss.requires_grad:
-            raise ValueError("Accumulation requires a scalar loss with a gradient graph")
-        if not torch.isfinite(loss).all().item():
-            raise ValueError("Accumulation loss contains NaN or Inf")
-        if model_inputs["labels"].tolist() != batch["model_inputs"]["labels"].tolist():
-            raise ValueError("Original labels changed during accumulation")
+        model_inputs = {key: value.to(parameter.device) for key, value in batch["model_inputs"].items()}
+        with training_autocast(config):
+            outputs = model(**model_inputs, return_dict=True, use_cache=False)
+            loss = outputs.loss
+        if loss is None or loss.ndim != 0 or not loss.requires_grad:
+            raise ValueError("Accumulation requires a scalar differentiable loss")
+        if not torch.isfinite(loss).item():
+            raise ValueError("Training loss contains NaN or Inf; inspect AMP stability before retrying")
         weight = token_counts[index] / total_tokens
         losses.append(loss.item())
         loss_weights.append(weight)
         scaled_loss = loss * weight
-        scaled_loss.backward()
+        if scaler is None:
+            scaled_loss.backward()
+        else:
+            scaler.scale(scaled_loss).backward()
         del outputs, loss, scaled_loss, model_inputs
 
-    selected_parameter = None
-    selected_name = None
-    for name, current_parameter in model.named_parameters():
-        if current_parameter.grad is None:
-            continue
-        if not torch.isfinite(current_parameter.grad).all().item():
-            raise ValueError("Accumulated gradient contains NaN or Inf: " + name)
-        if current_parameter.grad.detach().abs().max().item() == 0:
-            continue
-        if selected_parameter is None or current_parameter.numel() < selected_parameter.numel():
-            selected_parameter = current_parameter
-            selected_name = name
-    if selected_parameter is None:
-        raise ValueError("No parameter has a nonzero accumulated gradient")
-    norm_before = torch.nn.utils.clip_grad_norm_(
-        model.parameters(), max_norm=max_grad_norm, error_if_nonfinite=True, foreach=False,
-    ).item()
-    squared_norm_after = 0.0
-    for current_parameter in model.parameters():
-        if current_parameter.grad is not None:
-            norm = current_parameter.grad.detach().norm(2).item()
-            squared_norm_after = squared_norm_after + norm**2
-    norm_after = math.sqrt(squared_norm_after)
-    if not math.isfinite(norm_after) or norm_after > max_grad_norm + 0.00001:
-        raise ValueError("Gradient norm after clipping exceeds the configured limit")
+    # Unscale once, after all backwards in the group and before gradient clipping.
+    if scaler is not None:
+        scaler.unscale_(optimizer)
+    gradients = [p for p in model.parameters() if p.grad is not None]
+    if not gradients:
+        raise ValueError("Training produced no gradients")
+    finite_gradients = all(torch.isfinite(p.grad).all().item() for p in gradients)
+    if not finite_gradients and scaler is None:
+        raise ValueError("Training gradient contains NaN or Inf")
+    norm_before = None
+    norm_after = None
+    if finite_gradients:
+        norm_before = torch.nn.utils.clip_grad_norm_(
+            model.parameters(), max_norm=max_grad_norm, error_if_nonfinite=True, foreach=False,
+        ).item()
+        norm_after = math.sqrt(sum(p.grad.detach().norm(2).item() ** 2 for p in gradients))
+        if not math.isfinite(norm_after) or norm_after > max_grad_norm + 0.00001:
+            raise ValueError("Gradient norm after clipping exceeds the configured limit")
+
+    selected_name, selected_parameter = min(
+        ((n, p) for n, p in model.named_parameters() if p.grad is not None),
+        key=lambda item: item[1].numel(),
+    )
     parameter_before = selected_parameter.detach().clone()
-    optimizer.step()
-    if scheduler is not None:
+    learning_rate_used = optimizer.param_groups[0]["lr"]
+    if scaler is None:
+        optimizer.step()
+        updated = True
+    else:
+        old_scale = scaler.get_scale()
+        scaler.step(optimizer)  # GradScaler skips the step on non-finite gradients.
+        scaler.update()
+        updated = scaler.get_scale() >= old_scale
+    if updated and scheduler is not None:
         scheduler.step()
-    parameter_after = selected_parameter.detach()
-    if not torch.isfinite(parameter_after).all().item():
+    if not torch.isfinite(selected_parameter).all().item():
         raise ValueError("Updated parameter contains NaN or Inf")
-    change = (parameter_after - parameter_before).abs().max().item()
-    if change == 0:
-        raise ValueError("Selected parameter did not change after accumulated update")
-    group_loss = 0.0
-    for index in range(len(losses)):
-        group_loss = group_loss + losses[index] * loss_weights[index]
+    change = (selected_parameter.detach() - parameter_before).abs().max().item()
+    # The first warmup update legitimately uses LR=0; no weight change is required.
+    optimizer.zero_grad(set_to_none=True)
     return {
         "sample_ids": sample_ids,
         "microbatch_count": len(batches),
@@ -649,17 +709,19 @@ def train_accumulated_group(model, batches, optimizer, config_path="configs/trai
         "total_valid_target_tokens": total_tokens,
         "microbatch_losses": losses,
         "loss_weights": loss_weights,
-        "token_weighted_group_loss": group_loss,
+        "token_weighted_group_loss": sum(loss * weight for loss, weight in zip(losses, loss_weights)),
         "gradient_norm_before_clipping": norm_before,
         "gradient_norm_after_clipping": norm_after,
         "max_grad_norm": max_grad_norm,
-        "clipping_reduced_norm": norm_before > max_grad_norm,
+        "clipping_reduced_norm": finite_gradients and norm_before > max_grad_norm,
         "selected_parameter": selected_name,
         "parameter_change_max_abs": change,
-        "finite_gradient_check_passed": True,
-        "clipping_check_passed": True,
-        "parameter_changed_check_passed": True,
-        "optimizer_steps": 1,
+        "finite_gradient_check_passed": finite_gradients,
+        "clipping_check_passed": finite_gradients,
+        "parameter_changed_check_passed": change > 0,
+        "learning_rate_used": learning_rate_used,
+        "optimizer_steps": int(updated),
+        "skipped_optimizer_steps": int(not updated),
         "original_labels_check_passed": True,
     }
 
@@ -696,7 +758,7 @@ def restore_train_loader_state(train_loader, saved_state):
 
 def save_last_checkpoint(
     model, tokenizer, optimizer, checkpoint_run_dir, progress, train_loader,
-    config_path="configs/train.json",
+    config_path="configs/train.json", scheduler=None, scaler=None,
 ):
     import shutil
     from pathlib import Path
@@ -716,6 +778,7 @@ def save_last_checkpoint(
         raise RuntimeError("Checkpoint staging remains from an interrupted save; inspect before retrying")
     save_training_checkpoint(
         model, tokenizer, optimizer, pending, progress, config_path, train_loader=train_loader,
+        scheduler=scheduler, scaler=scaler,
     )
     for file_name in ["config.json", "model.safetensors", "tokenizer_config.json", "spiece.model", "training_state.pt"]:
         path = pending / file_name
@@ -749,7 +812,10 @@ def save_last_checkpoint(
     }
 
 
-def load_last_checkpoint(checkpoint_run_dir, train_loader, config_path="configs/train.json"):
+def load_last_checkpoint(
+    checkpoint_run_dir, train_loader, config_path="configs/train.json",
+    return_training_components=False,
+):
     from pathlib import Path
 
     root = Path(checkpoint_run_dir).resolve()
@@ -758,15 +824,19 @@ def load_last_checkpoint(checkpoint_run_dir, train_loader, config_path="configs/
         checkpoint_dir = root / "last_previous"
     if checkpoint_dir.is_symlink() or checkpoint_dir.resolve().parent != root:
         raise ValueError("Resume checkpoint must stay inside the selected run directory")
-    model, tokenizer, optimizer, progress, report = load_training_checkpoint(
+    loaded = load_training_checkpoint(
         checkpoint_dir, config_path, train_loader=train_loader,
+        return_training_components=return_training_components,
     )
+    model, tokenizer, optimizer, progress, report = loaded[:5]
     if progress["completed_epochs"] < 1:
         raise ValueError("Resume checkpoint must represent a completed epoch")
     report["loaded_checkpoint_dir"] = str(checkpoint_dir)
     report["resume_boundary"] = "end_of_epoch"
     report["next_epoch"] = progress["completed_epochs"] + 1
     model.train()
+    if return_training_components:
+        return model, tokenizer, optimizer, progress, report, loaded[5], loaded[6]
     return model, tokenizer, optimizer, progress, report
 
 
@@ -885,8 +955,8 @@ def load_best_checkpoint(checkpoint_run_dir, config_path="configs/train.json"):
     config = load_train_config(config_path)
     if selection["train_config"] != config or not math.isfinite(selection["validation_loss"]):
         raise ValueError("Best checkpoint metadata does not match current configuration")
-    if config["precision"] != "fp32" or not torch.cuda.is_available():
-        raise RuntimeError("Best checkpoint check requires CUDA and fp32")
+    if not torch.cuda.is_available():
+        raise RuntimeError("Best checkpoint loading requires CUDA")
     tokenizer = AutoTokenizer.from_pretrained(best, use_fast=False, local_files_only=True)
     model = AutoModelForSeq2SeqLM.from_pretrained(best, local_files_only=True)
     model = model.to(device="cuda:0", dtype=torch.float32)
@@ -894,7 +964,10 @@ def load_best_checkpoint(checkpoint_run_dir, config_path="configs/train.json"):
     return model, tokenizer, selection
 
 
-def train_epoch(model, train_loader, optimizer, global_step=0, config_path="configs/train.json", scheduler=None):
+def train_epoch(
+    model, train_loader, optimizer, global_step=0, config_path="configs/train.json",
+    scheduler=None, scaler=None,
+):
     import time
     import torch
 
@@ -904,6 +977,7 @@ def train_epoch(model, train_loader, optimizer, global_step=0, config_path="conf
     total_loss = 0.0
     total_tokens = 0
     update_count = 0
+    attempted_updates = 0
     device = next(model.parameters()).device
     torch.cuda.synchronize(device)
     started_at = time.perf_counter()
@@ -918,14 +992,17 @@ def train_epoch(model, train_loader, optimizer, global_step=0, config_path="conf
             group.append(batch)
         if len(group) == 0:
             break
-        report = train_accumulated_group(model, group, optimizer, config_path, scheduler=scheduler)
+        report = train_accumulated_group(
+            model, group, optimizer, config_path, scheduler=scheduler, scaler=scaler,
+        )
         seen_ids.extend(report["sample_ids"])
         token_count = report["total_valid_target_tokens"]
         total_loss = total_loss + report["token_weighted_group_loss"] * token_count
         total_tokens = total_tokens + token_count
-        global_step = global_step + 1
-        update_count = update_count + 1
-        if update_count % 25 == 0:
+        global_step += report["optimizer_steps"]
+        update_count += report["optimizer_steps"]
+        attempted_updates += 1
+        if attempted_updates % 25 == 0:
             print("Global step:", global_step, "Mẫu đã học:", len(seen_ids), "Train loss:", total_loss / total_tokens, flush=True)
     torch.cuda.synchronize(device)
     elapsed = time.perf_counter() - started_at
@@ -934,8 +1011,12 @@ def train_epoch(model, train_loader, optimizer, global_step=0, config_path="conf
     if total_tokens == 0:
         raise ValueError("Training epoch requires valid target tokens")
     expected_updates = (len(train_loader) + config["gradient_accumulation_steps"] - 1) // config["gradient_accumulation_steps"]
-    if update_count != expected_updates:
-        raise ValueError("Training epoch optimizer update count is incorrect")
+    if attempted_updates != expected_updates:
+        raise ValueError("Training epoch accumulation group count is incorrect")
+    if update_count == 0:
+        raise RuntimeError("No successful optimizer updates this epoch; inspect AMP overflow")
+    if scheduler is not None and scheduler.last_epoch != global_step:
+        raise ValueError("Scheduler position does not match successful optimizer updates")
     optimizer_steps = set()
     for state in optimizer.state.values():
         optimizer_steps.add(int(state["step"].item()))
@@ -946,6 +1027,8 @@ def train_epoch(model, train_loader, optimizer, global_step=0, config_path="conf
         "train_sample_count": len(seen_ids),
         "train_valid_target_tokens": total_tokens,
         "optimizer_updates": update_count,
+        "attempted_updates": attempted_updates,
+        "skipped_updates": attempted_updates - update_count,
         "global_step": global_step,
         "train_seconds": elapsed,
         "complete_train_samples_check_passed": True,
