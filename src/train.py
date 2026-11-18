@@ -145,14 +145,45 @@ def create_optimizer(model, config_path="configs/train.json"):
     import torch
 
     config = load_train_config(config_path)
-    if config["optimizer"] != "AdamW" or config["precision"] != "fp32":
-        raise ValueError("G4.2 expects AdamW and fp32")
+    if config["optimizer"] != "AdamW":
+        raise ValueError("Training expects AdamW")
+    parameters = model.parameters()
+    if config.get("optimizer_grouping", "legacy") == "trainer":
+        from transformers.trainer_pt_utils import get_parameter_names
+
+        forbidden = [r"bias", r"layernorm", r"rmsnorm", r"(?:^|\.)norm(?:$|\.)", r"_norm(?:$|\.)"]
+        decay_names = set(get_parameter_names(model, [torch.nn.LayerNorm], forbidden))
+        parameters = [
+            {"params": [p for n, p in model.named_parameters() if p.requires_grad and n in decay_names],
+             "weight_decay": config["weight_decay"]},
+            {"params": [p for n, p in model.named_parameters() if p.requires_grad and n not in decay_names],
+             "weight_decay": 0.0},
+        ]
     return torch.optim.AdamW(
-        model.parameters(),
+        parameters,
         lr=config["learning_rate"],
         weight_decay=config["weight_decay"],
         foreach=False,
     )
+
+
+def create_scheduler(optimizer, train_loader, config_path="configs/train.json"):
+    import math
+    from transformers import get_linear_schedule_with_warmup
+
+    config = load_train_config(config_path)
+    if config.get("lr_scheduler_type", "constant") == "constant":
+        return None
+    if train_loader is None or len(train_loader) == 0:
+        raise ValueError("Linear scheduling requires the nonempty training DataLoader")
+    updates_per_epoch = math.ceil(len(train_loader) / config["gradient_accumulation_steps"])
+    total_steps = updates_per_epoch * config["num_epochs"]
+    warmup_steps = math.ceil(total_steps * config.get("warmup_ratio", 0.0))
+    scheduler = get_linear_schedule_with_warmup(optimizer, warmup_steps, total_steps)
+    # Persist the schedule horizon as well as its position for epoch-boundary resume.
+    scheduler.total_training_steps = total_steps
+    scheduler.warmup_steps = warmup_steps
+    return scheduler
 
 
 def validate_model(model, validation_loader, expected_sample_ids):
@@ -513,7 +544,7 @@ def create_training_run(project_root, drive_root, allow_uncommitted=False):
     return report
 
 
-def train_accumulated_group(model, batches, optimizer, config_path="configs/train.json"):
+def train_accumulated_group(model, batches, optimizer, config_path="configs/train.json", scheduler=None):
     import math
     import torch
 
@@ -600,6 +631,8 @@ def train_accumulated_group(model, batches, optimizer, config_path="configs/trai
         raise ValueError("Gradient norm after clipping exceeds the configured limit")
     parameter_before = selected_parameter.detach().clone()
     optimizer.step()
+    if scheduler is not None:
+        scheduler.step()
     parameter_after = selected_parameter.detach()
     if not torch.isfinite(parameter_after).all().item():
         raise ValueError("Updated parameter contains NaN or Inf")
@@ -861,7 +894,7 @@ def load_best_checkpoint(checkpoint_run_dir, config_path="configs/train.json"):
     return model, tokenizer, selection
 
 
-def train_epoch(model, train_loader, optimizer, global_step=0, config_path="configs/train.json"):
+def train_epoch(model, train_loader, optimizer, global_step=0, config_path="configs/train.json", scheduler=None):
     import time
     import torch
 
@@ -885,7 +918,7 @@ def train_epoch(model, train_loader, optimizer, global_step=0, config_path="conf
             group.append(batch)
         if len(group) == 0:
             break
-        report = train_accumulated_group(model, group, optimizer, config_path)
+        report = train_accumulated_group(model, group, optimizer, config_path, scheduler=scheduler)
         seen_ids.extend(report["sample_ids"])
         token_count = report["total_valid_target_tokens"]
         total_loss = total_loss + report["token_weighted_group_loss"] * token_count
