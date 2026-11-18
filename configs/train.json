@@ -1,5 +1,5 @@
 {
-  "config_status": "initial",
+  "config_status": "pending_manual_verification",
   "model": {
     "id": "VietAI/vit5-base",
     "revision": "2209a38d735ede63e88f5aa52bcdc11a05a37b85"
@@ -22,29 +22,42 @@
   "seed": 42,
   "task_prefix": "",
   "max_source_length": 1024,
-  "max_target_length": 128,
+  "max_target_length": 256,
   "token_limits_decision": {
-    "status": "approved",
-    "selected_report": "data/manifests/full/wikilingua_truncation_1024_128.json",
-    "reason": "Keep source/target limits 1024/128; regenerate truncation statistics on the full train/validation splits during data preparation. Previous percentages apply only to the small subset.",
-    "training_memory_verified": true,
-    "training_memory_verification_scope": "Tesla T4 fp32 batch 1; 16 real train steps and one padded 1024/128 step completed; accumulation and full training loop not yet verified",
-    "training_memory_verification_report": "outputs/vit5_finetuning_20261105_165225_962607/resource_check.json"
+    "status": "pending_manual_verification",
+    "selected_report": "data/manifests/full/wikilingua_truncation_1024_256.json",
+    "reason": "Align target length with the VietAI example; regenerate full train/validation truncation statistics before training. Keep the fixed data splits.",
+    "training_memory_verified": false,
+    "training_memory_verification_scope": "Pending manual T4 verification with AMP fp16, batch 1, accumulation 4, source/target 1024/256.",
+    "training_memory_verification_report": null
   },
   "batch_size": 1,
-  "gradient_accumulation_steps": 8,
+  "gradient_accumulation_steps": 4,
   "max_grad_norm": 1.0,
-  "learning_rate": 0.00005,
-  "num_epochs": 10,
+  "learning_rate": 1e-05,
+  "num_epochs": 30,
   "early_stopping": {
     "patience": 3,
     "min_delta": 0.0
   },
   "optimizer": "AdamW",
   "weight_decay": 0.01,
-  "precision": "fp32",
+  "precision": "fp16",
   "checkpoint_selection": {
     "metric": "validation_loss",
     "mode": "min"
+  },
+  "warmup_ratio": 0.05,
+  "lr_scheduler_type": "linear",
+  "optimizer_grouping": "trainer",
+  "reference": {
+    "repository": "https://github.com/vietai/ViT5",
+    "notebook": "examples/finetune_huggingface_example.ipynb",
+    "commit": "151850bb988f8364c5499fbde241a998a6695c9d",
+    "adaptations": [
+      "physical batch 1 and accumulation 4 instead of batch 4",
+      "validation each epoch, early stopping and best checkpoint",
+      "existing grouped data splits and Unicode ROUGE"
+    ]
   }
 }
