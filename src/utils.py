@@ -125,7 +125,7 @@ def load_train_config(path="configs/train.json"):
 def load_generation_config(path="configs/generation.json"):
     config = load_config(path)
     _positive_integer(config, "num_beams")
-    _positive_integer(config, "max_new_tokens")
+    generation_length_kwargs(config)
     if config.get("do_sample") is not False:
         raise ValueError("do_sample must be false for the planned greedy/beam comparison")
     no_repeat_ngram_size = config.get("no_repeat_ngram_size", 0)
@@ -134,6 +134,32 @@ def load_generation_config(path="configs/generation.json"):
     if no_repeat_ngram_size < 0:
         raise ValueError("Lỗi: no_repeat_ngram_size không được âm.")
     return config
+
+
+def generation_length_kwargs(config):
+    """Accept one explicit length convention, including historical run configs."""
+    keys = [key for key in ("max_length", "max_new_tokens") if key in config]
+    if len(keys) != 1:
+        raise ValueError("Specify exactly one of max_length or max_new_tokens")
+    key = keys[0]
+    _positive_integer(config, key)
+    if key == "max_length" and config[key] < 2:
+        raise ValueError("ViT5 max_length must allow the decoder start token and output")
+    return {key: config[key]}
+
+
+def generation_new_token_limit(config):
+    """ViT5 starts decoding with one decoder-start token; EOS is a new token."""
+    lengths = generation_length_kwargs(config)
+    if "max_new_tokens" in lengths:
+        return lengths["max_new_tokens"]
+    return lengths["max_length"] - 1
+
+
+def validate_generation_target_length(generation, train_config):
+    lengths = generation_length_kwargs(generation)
+    if next(iter(lengths.values())) != train_config["max_target_length"]:
+        raise ValueError("Generation length setting does not match the run target limit")
 
 
 def set_seed(seed):

@@ -10,7 +10,10 @@ from src.data import _prepared_file_path, _split_manifest_fingerprint
 from src.inference import load_summarizer, summarize_text
 from src.metrics import get_rouge_settings, score_summaries, measure_sentence_repetition
 from src.tokenization import load_tokenization_source
-from src.utils import load_generation_config, set_seed
+from src.utils import (
+    generation_new_token_limit, load_generation_config, set_seed,
+    validate_generation_target_length,
+)
 
 
 def choose_decoding(candidates):
@@ -85,8 +88,7 @@ def run_decoding_comparison(
     if len(set(expected_ids)) != len(expected_ids):
         raise ValueError("Lỗi: Validation có ID trùng.")
     base_generation = load_generation_config(generation_config_path)
-    if base_generation["max_new_tokens"] != config["max_target_length"]:
-        raise ValueError("Lỗi: Giới hạn sinh không khớp cấu hình đã chốt.")
+    validate_generation_target_length(base_generation, config)
     checkpoint_dir = root / "checkpoints" / checkpoint_run_id
     model, tokenizer, selection = load_summarizer(checkpoint_dir, config_path)
     if selection["validation_sample_ids"] != expected_ids:
@@ -144,7 +146,7 @@ def run_decoding_comparison(
             if result["used_input_token_count"] > config["max_source_length"]:
                 raise ValueError("Lỗi: Nguồn vượt giới hạn.")
             generated_token_count = len(result["generated_ids"]) - 1
-            if generated_token_count > base_generation["max_new_tokens"]:
+            if generated_token_count > generation_new_token_limit(base_generation):
                 raise ValueError("Lỗi: Đầu ra vượt giới hạn sinh.")
             elapsed = result["elapsed_seconds"]
             if not math.isfinite(elapsed) or elapsed < 0:

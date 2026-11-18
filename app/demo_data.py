@@ -3,7 +3,7 @@ import json
 import math
 from pathlib import Path
 
-from src.utils import load_generation_config
+from src.utils import load_generation_config, validate_generation_target_length
 
 
 def select_completed_run(drive_root, run_id=""):
@@ -138,8 +138,7 @@ def load_demo_evaluation(drive_root, profile, summary, evaluation_id=""):
     method = decision["selected_method"]
     if method not in method_beams or generation["num_beams"] != method_beams[method]:
         raise ValueError("Lỗi: Phương án decoding không khớp số beam.")
-    if generation["max_new_tokens"] != profile["train_config"]["max_target_length"]:
-        raise ValueError("Lỗi: Ngân sách sinh không khớp run.")
+    validate_generation_target_length(generation, profile["train_config"])
     for report in [comparison, textrank_report]:
         if report["checkpoint_run_id"] != profile["run_id"]:
             raise ValueError("Lỗi: Báo cáo validation thuộc run khác.")

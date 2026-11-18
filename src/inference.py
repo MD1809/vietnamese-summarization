@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from src.preprocessing import normalize_text
-from src.utils import load_generation_config, load_train_config
+from src.utils import generation_length_kwargs, load_generation_config, load_train_config
 
 
 def load_summarizer(checkpoint_run_dir, config_path="configs/train.json"):
@@ -81,7 +81,7 @@ def summarize_text(
             attention_mask=encoded["attention_mask"].to(device),
             do_sample=generation["do_sample"],
             num_beams=generation["num_beams"],
-            max_new_tokens=generation["max_new_tokens"],
+            **generation_length_kwargs(generation),
             no_repeat_ngram_size=generation.get("no_repeat_ngram_size", 0),
         )
     if device.type == "cuda":
