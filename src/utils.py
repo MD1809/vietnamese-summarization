@@ -94,6 +94,21 @@ def load_train_config(path="configs/train.json"):
         raise ValueError("optimizer must be AdamW for the current project")
     if config.get("precision") not in ("fp32", "fp16", "bf16"):
         raise ValueError("precision must be fp32, fp16 or bf16")
+    # Missing fields retain the behavior of saved configurations from older runs.
+    scheduler_type = config.get("lr_scheduler_type", "constant")
+    if scheduler_type not in ("constant", "linear"):
+        raise ValueError("lr_scheduler_type must be constant or linear")
+    warmup_ratio = config.get("warmup_ratio", 0.0)
+    if type(warmup_ratio) not in (int, float) or not math.isfinite(warmup_ratio) or not 0 <= warmup_ratio < 1:
+        raise ValueError("warmup_ratio must be finite and between 0 (inclusive) and 1")
+    if scheduler_type == "constant" and warmup_ratio != 0:
+        raise ValueError("Warmup requires the linear scheduler")
+    if config.get("optimizer_grouping", "legacy") not in ("legacy", "trainer"):
+        raise ValueError("optimizer_grouping must be legacy or trainer")
+    if "max_grad_norm" in config:
+        value = config["max_grad_norm"]
+        if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+            raise ValueError("max_grad_norm must be finite and positive")
     if config.get("checkpoint_selection") != {"metric": "validation_loss", "mode": "min"}:
         raise ValueError("Select checkpoints by minimum validation_loss")
     if "early_stopping" in config:
