@@ -787,6 +787,10 @@ def save_last_checkpoint(
     state = torch.load(pending / "training_state.pt", map_location="cpu", weights_only=True)
     if state["progress"] != progress or state["train_config"] != load_train_config(config_path):
         raise ValueError("Pending checkpoint progress or configuration readback failed")
+    if scheduler is not None and state.get("scheduler_state_dict") != scheduler.state_dict():
+        raise ValueError("Pending scheduler state readback failed")
+    if scaler is not None and state.get("scaler_state_dict") != scaler.state_dict():
+        raise ValueError("Pending scaler state readback failed")
     restore_state = capture_train_loader_state(train_loader)
     if not torch.equal(state["train_loader_state"]["generator_state"], restore_state["generator_state"]):
         raise ValueError("Pending DataLoader generator state readback failed")
@@ -980,6 +984,7 @@ def train_epoch(
     attempted_updates = 0
     device = next(model.parameters()).device
     torch.cuda.synchronize(device)
+    torch.cuda.reset_peak_memory_stats(device)
     started_at = time.perf_counter()
     iterator = iter(train_loader)
     while True:
@@ -1031,6 +1036,7 @@ def train_epoch(
         "skipped_updates": attempted_updates - update_count,
         "global_step": global_step,
         "train_seconds": elapsed,
+        "peak_vram_gib": torch.cuda.max_memory_allocated(device) / 1024**3,
         "complete_train_samples_check_passed": True,
     }
 
@@ -1049,17 +1055,20 @@ def write_training_history(output_dir, history):
         "train_valid_target_tokens", "validation_valid_target_tokens",
         "learning_rate", "train_seconds", "validation_seconds", "epoch_compute_seconds",
     ]
+    for field in ["optimizer_updates", "attempted_updates", "skipped_updates", "peak_vram_gib"]:
+        if any(field in row for row in history):
+            fields.append(field)
     with pending.open("w", encoding="utf-8", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fields)
         writer.writeheader()
-        writer.writerows(history)
+        writer.writerows({field: row.get(field, "") for field in fields} for row in history)
     with pending.open(encoding="utf-8", newline="") as file:
         restored = list(csv.DictReader(file))
     expected = []
     for row in history:
         strings = {}
         for field in fields:
-            strings[field] = str(row[field])
+            strings[field] = str(row.get(field, ""))
         expected.append(strings)
     if restored != expected:
         raise ValueError("Training CSV readback does not match checkpoint history")
