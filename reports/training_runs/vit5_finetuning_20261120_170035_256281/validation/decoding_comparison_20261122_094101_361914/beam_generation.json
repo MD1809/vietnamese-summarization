@@ -1,0 +1,6 @@
+{
+  "num_beams": 4,
+  "max_length": 256,
+  "do_sample": false,
+  "no_repeat_ngram_size": 0
+}
