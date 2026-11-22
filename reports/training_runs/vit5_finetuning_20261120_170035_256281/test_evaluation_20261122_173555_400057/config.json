@@ -1,0 +1,140 @@
+{
+  "run_id": "vit5_finetuning_20261120_170035_256281",
+  "created_at_utc": "2026-11-20T17:00:35.256281+00:00",
+  "run_status": "setup_only",
+  "source": {
+    "repo_url": "https://github.com/MD1809/vietnamese-summarization.git",
+    "git_commit": "3e6318429eda4c0fbe3980e69c0777bbe692b1f9",
+    "commit_on_fetched_origin_main": true,
+    "has_uncommitted_changes": false,
+    "status_porcelain": "",
+    "allow_uncommitted": false
+  },
+  "train_config": {
+    "config_status": "pending_manual_verification",
+    "model": {
+      "id": "VietAI/vit5-base",
+      "revision": "2209a38d735ede63e88f5aa52bcdc11a05a37b85"
+    },
+    "dataset": {
+      "id": "esdurmus/wiki_lingua",
+      "revision": "ea3db3510cbd34d0f8dc612419ae40e4732f3b40",
+      "language": "vietnamese"
+    },
+    "paths": {
+      "train_file": "data/processed/full/train.jsonl",
+      "validation_file": "data/processed/full/validation.jsonl",
+      "test_file": "data/processed/full/test.jsonl",
+      "subset_manifest": "data/manifests/full/wikilingua_full.json",
+      "processed_manifest": "data/manifests/full/wikilingua_processed.json",
+      "output_dir": "outputs",
+      "checkpoint_dir": "checkpoints",
+      "statistics_manifest": "data/manifests/full/wikilingua_statistics.json"
+    },
+    "seed": 42,
+    "task_prefix": "",
+    "max_source_length": 1024,
+    "max_target_length": 256,
+    "token_limits_decision": {
+      "status": "pending_manual_verification",
+      "selected_report": "data/manifests/full/wikilingua_truncation_1024_256.json",
+      "reason": "Align target length with the VietAI example; regenerate full train/validation truncation statistics before training. Keep the fixed data splits.",
+      "training_memory_verified": false,
+      "training_memory_verification_scope": "Pending manual T4 verification with AMP fp16, batch 1, accumulation 4, source/target 1024/256.",
+      "training_memory_verification_report": null
+    },
+    "batch_size": 1,
+    "gradient_accumulation_steps": 4,
+    "max_grad_norm": 1.0,
+    "learning_rate": 1e-05,
+    "num_epochs": 30,
+    "early_stopping": {
+      "patience": 3,
+      "min_delta": 0.0
+    },
+    "optimizer": "AdamW",
+    "weight_decay": 0.01,
+    "precision": "fp16",
+    "checkpoint_selection": {
+      "metric": "validation_loss",
+      "mode": "min"
+    },
+    "warmup_ratio": 0.05,
+    "lr_scheduler_type": "linear",
+    "optimizer_grouping": "trainer",
+    "reference": {
+      "repository": "https://github.com/vietai/ViT5",
+      "notebook": "examples/finetune_huggingface_example.ipynb",
+      "commit": "151850bb988f8364c5499fbde241a998a6695c9d",
+      "adaptations": [
+        "physical batch 1 and accumulation 4 instead of batch 4",
+        "validation each epoch, early stopping and best checkpoint",
+        "existing grouped data splits and Unicode ROUGE"
+      ]
+    }
+  },
+  "generation_config": {
+    "num_beams": 1,
+    "max_length": 256,
+    "do_sample": false,
+    "no_repeat_ngram_size": 0
+  },
+  "environment": {
+    "python_version": "3.13.16",
+    "library_versions": {
+      "torch": "2.11.0+cu130",
+      "transformers": "4.57.6",
+      "datasets": "4.8.5",
+      "sentencepiece": "0.2.2",
+      "rouge-score": "0.1.2",
+      "pandas": "2.2.3",
+      "matplotlib": "3.10.0",
+      "gradio": "6.17.3",
+      "numpy": "2.4.6"
+    },
+    "pytorch_cuda_version": "13.0",
+    "cuda_available": true,
+    "gpus": [
+      {
+        "index": 0,
+        "name": "Tesla T4",
+        "total_vram_gib": 14.56
+      }
+    ]
+  },
+  "data": {
+    "subset_manifest_sha256": "9f518a2a9bd0ef3712435714c578608f38916c47370b53987cc5cc2c3c4cf8d9",
+    "verified_source_files": {
+      "train": {
+        "path": "data/processed/full/train.jsonl",
+        "pair_count": 15601,
+        "byte_count": 58970452,
+        "sha256": "0b48d13d40e549108ba2f426ecdd29fffd825e28d4db3a2ffcf8377c0b71ca10"
+      },
+      "validation": {
+        "path": "data/processed/full/validation.jsonl",
+        "pair_count": 2034,
+        "byte_count": 7992770,
+        "sha256": "492b4531225ca389be0e9603ec2692ab5774a3c7db7149ecb188a5576a573496"
+      }
+    },
+    "train_sample_count": 15601,
+    "validation_sample_count": 2034,
+    "train_validation_readback_check_passed": true,
+    "test_content_read": false
+  },
+  "paths": {
+    "drive_root": "/content/drive/MyDrive/vietnamese-summarization",
+    "output_dir": "/content/drive/MyDrive/vietnamese-summarization/outputs/vit5_finetuning_20261120_170035_256281",
+    "checkpoint_dir": "/content/drive/MyDrive/vietnamese-summarization/checkpoints/vit5_finetuning_20261120_170035_256281",
+    "train_file": "/content/drive/MyDrive/vietnamese-summarization/data/processed/full/train.jsonl",
+    "validation_file": "/content/drive/MyDrive/vietnamese-summarization/data/processed/full/validation.jsonl",
+    "test_file": "/content/drive/MyDrive/vietnamese-summarization/data/processed/full/test.jsonl",
+    "subset_manifest": "/content/drive/MyDrive/vietnamese-summarization/data/manifests/full/wikilingua_full.json",
+    "processed_manifest": "/content/drive/MyDrive/vietnamese-summarization/data/manifests/full/wikilingua_processed.json"
+  },
+  "source_changes": {
+    "patch_file": null,
+    "untracked_snapshot_files": []
+  }
+}
