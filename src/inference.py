@@ -75,15 +75,18 @@ def summarize_text(
     started_at = time.perf_counter()
     encoded, source_info = prepare_source(text, tokenizer, config, "pt")
     model.eval()
+    generate_kwargs = {
+        "input_ids": encoded["input_ids"].to(device),
+        "attention_mask": encoded["attention_mask"].to(device),
+        "do_sample": generation["do_sample"],
+        "num_beams": generation["num_beams"],
+        **generation_length_kwargs(generation),
+        "no_repeat_ngram_size": generation.get("no_repeat_ngram_size", 0),
+    }
+    if "repetition_penalty" in generation:
+        generate_kwargs["repetition_penalty"] = float(generation["repetition_penalty"])
     with torch.no_grad():
-        generated = model.generate(
-            input_ids=encoded["input_ids"].to(device),
-            attention_mask=encoded["attention_mask"].to(device),
-            do_sample=generation["do_sample"],
-            num_beams=generation["num_beams"],
-            **generation_length_kwargs(generation),
-            no_repeat_ngram_size=generation.get("no_repeat_ngram_size", 0),
-        )
+        generated = model.generate(**generate_kwargs)
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     generated_ids = generated.tolist()[0]

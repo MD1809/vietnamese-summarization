@@ -1,6 +1,7 @@
 {
-  "num_beams": 1,
+  "num_beams": 4,
   "max_length": 256,
   "do_sample": false,
-  "no_repeat_ngram_size": 0
+  "no_repeat_ngram_size": 3,
+  "repetition_penalty": 1.15
 }

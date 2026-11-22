@@ -133,6 +133,14 @@ def load_generation_config(path="configs/generation.json"):
         raise ValueError("Lỗi: no_repeat_ngram_size phải là số nguyên.")
     if no_repeat_ngram_size < 0:
         raise ValueError("Lỗi: no_repeat_ngram_size không được âm.")
+    if "repetition_penalty" in config:
+        repetition_penalty = config["repetition_penalty"]
+        if (
+            type(repetition_penalty) not in (int, float)
+            or not math.isfinite(repetition_penalty)
+            or repetition_penalty < 1.0
+        ):
+            raise ValueError("Lỗi: repetition_penalty phải là số thực hữu hạn >= 1.0.")
     return config
 
 

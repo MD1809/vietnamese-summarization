@@ -178,7 +178,16 @@ class DecodingComparisonTests(unittest.TestCase):
             output = Path(report["output_dir"])
             for method, beams in [("greedy", 1), ("beam", 4)]:
                 candidate = report["candidates"][method]
-                self.assertEqual(candidate["generation_config"], {"num_beams": beams, "max_new_tokens": 128, "do_sample": False})
+                self.assertEqual(
+                    candidate["generation_config"],
+                    {
+                        "num_beams": beams,
+                        "max_length": 256,
+                        "do_sample": False,
+                        "no_repeat_ngram_size": 3,
+                        "repetition_penalty": 1.15,
+                    },
+                )
                 rows = []
                 for line in (output / candidate["predictions_file"]).read_text(encoding="utf-8").splitlines():
                     rows.append(json.loads(line))
@@ -190,17 +199,25 @@ class DecodingComparisonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.prepare(root)
-            generation = {"num_beams": 1, "max_new_tokens": 128, "do_sample": False, "no_repeat_ngram_size": 4}
+            generation = {
+                "num_beams": 1,
+                "max_length": 256,
+                "do_sample": False,
+                "no_repeat_ngram_size": 4,
+                "repetition_penalty": 1.2,
+            }
             with patch("src.evaluate.load_generation_config", return_value=generation):
                 report, generate = self.run_comparison(root)
             for method in ["greedy", "beam"]:
                 candidate = report["candidates"][method]
                 self.assertEqual(candidate["generation_config"]["no_repeat_ngram_size"], 4)
+                self.assertEqual(candidate["generation_config"]["repetition_penalty"], 1.2)
                 self.assertEqual(candidate["sentence_repetition"]["sample_count"], 2)
                 self.assertEqual(candidate["sentence_repetition"]["repeated_sample_count"], 0)
             for call in generate.call_args_list:
                 settings = json.loads(Path(call.kwargs["generation_config_path"]).read_text())
                 self.assertEqual(settings["no_repeat_ngram_size"], 4)
+                self.assertEqual(settings["repetition_penalty"], 1.2)
 
     def test_changed_source_ids_between_methods_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

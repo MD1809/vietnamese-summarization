@@ -49,35 +49,53 @@ class InferenceTests(unittest.TestCase):
         self.assertNotIn("labels", kwargs)
         self.assertIs(kwargs["do_sample"], False)
         self.assertEqual(kwargs["num_beams"], 4)
-        self.assertEqual(kwargs["max_new_tokens"], 128)
-        self.assertEqual(kwargs["no_repeat_ngram_size"], 0)
+        self.assertEqual(kwargs["max_length"], 256)
+        self.assertEqual(kwargs["no_repeat_ngram_size"], 3)
+        self.assertEqual(kwargs["repetition_penalty"], 1.15)
         model.eval.assert_called_once_with()
         context.__enter__.assert_called_once()
         context.__exit__.assert_called_once()
         tokenizer.decode.assert_called_once_with([0, 8, 1], skip_special_tokens=True)
 
-    def test_no_repeat_ngram_setting_reaches_generation_and_report(self):
+    def test_no_repeat_ngram_and_repetition_penalty_reach_generation_and_report(self):
         model, tokenizer, torch_module, context = self.examples()
-        generation = {"num_beams": 1, "max_new_tokens": 128, "do_sample": False, "no_repeat_ngram_size": 4}
+        generation = {
+            "num_beams": 1,
+            "max_new_tokens": 128,
+            "do_sample": False,
+            "no_repeat_ngram_size": 4,
+            "repetition_penalty": 1.2,
+        }
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "generation.json"
             path.write_text(json.dumps(generation), encoding="utf-8")
             with patch.dict(sys.modules, {"torch": torch_module}):
                 result = summarize_text("Nguồn.", model, tokenizer, generation_config_path=path)
         self.assertEqual(model.generate.call_args.kwargs["no_repeat_ngram_size"], 4)
+        self.assertEqual(model.generate.call_args.kwargs["repetition_penalty"], 1.2)
         self.assertEqual(result["generation_config"], generation)
 
-    def test_no_repeat_ngram_requires_a_nonnegative_integer(self):
+    def test_no_repeat_ngram_and_repetition_penalty_validation(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "generation.json"
             for value in [-1, 1.5, True, "4", None]:
                 config = {"num_beams": 1, "max_new_tokens": 128, "do_sample": False, "no_repeat_ngram_size": value}
                 path.write_text(json.dumps(config), encoding="utf-8")
-                with self.subTest(value=value):
+                with self.subTest(no_repeat_ngram_size=value):
                     with self.assertRaises(ValueError):
                         load_generation_config(path)
             for value in [0, 4]:
                 config["no_repeat_ngram_size"] = value
+                path.write_text(json.dumps(config), encoding="utf-8")
+                self.assertEqual(load_generation_config(path), config)
+            for value in [0.9, 0, -1.0, True, "1.15", None]:
+                config = {"num_beams": 4, "max_length": 256, "do_sample": False, "repetition_penalty": value}
+                path.write_text(json.dumps(config), encoding="utf-8")
+                with self.subTest(repetition_penalty=value):
+                    with self.assertRaises(ValueError):
+                        load_generation_config(path)
+            for value in [1, 1.0, 1.15]:
+                config["repetition_penalty"] = value
                 path.write_text(json.dumps(config), encoding="utf-8")
                 self.assertEqual(load_generation_config(path), config)
 
