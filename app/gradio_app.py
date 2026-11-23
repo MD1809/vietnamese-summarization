@@ -1,6 +1,96 @@
+from pathlib import Path
+
 from src.inference import load_summarizer, summarize_text
+from src.metrics import score_summary
 from src.preprocessing import normalize_text
 from src.textRank import summarize_textrank
+
+
+SAMPLE_METRIC_HEADERS = [
+    "Phương pháp",
+    "Số từ",
+    "Tỷ lệ nén",
+    "Thời gian (s)",
+    "ROUGE-1 (%)",
+    "ROUGE-2 (%)",
+    "ROUGE-L (%)",
+]
+
+TEST_METRIC_HEADERS = [
+    "Mô hình",
+    "ROUGE-1 (%)",
+    "ROUGE-2 (%)",
+    "ROUGE-L (%)",
+    "Lặp câu (%)",
+]
+
+
+def count_words(text):
+    if not isinstance(text, str):
+        return 0
+    normalized = normalize_text(text)
+    if normalized == "":
+        return 0
+    return len(normalized.split())
+
+
+def format_sample_metrics(
+    source_text,
+    textrank_summary,
+    vit5_summary,
+    reference="",
+    textrank_seconds=None,
+    vit5_seconds=None,
+):
+    source_words = count_words(source_text)
+    if source_words == 0 or (textrank_summary == "" and vit5_summary == ""):
+        return []
+    has_reference = isinstance(reference, str) and normalize_text(reference) != ""
+    rows = []
+    for label, summary, elapsed in [
+        ("TextRank", textrank_summary, textrank_seconds),
+        ("ViT5", vit5_summary, vit5_seconds),
+    ]:
+        words = count_words(summary)
+        ratio = f"{(words / source_words * 100):.1f}%"
+        elapsed_str = f"{elapsed:.2f}" if isinstance(elapsed, (int, float)) else "—"
+        if has_reference and summary != "":
+            scores = score_summary(reference, summary)
+            r1 = f"{scores['rouge1']['f1'] * 100:.2f}"
+            r2 = f"{scores['rouge2']['f1'] * 100:.2f}"
+            rl = f"{scores['rougeL']['f1'] * 100:.2f}"
+        else:
+            r1 = r2 = rl = "—"
+        rows.append([label, words, ratio, elapsed_str, r1, r2, rl])
+    return rows
+
+
+def build_overview_rows(metrics):
+    if not isinstance(metrics, dict) or "results" not in metrics:
+        return []
+    rows = []
+    for key, label in [
+        ("textrank", "TextRank (Extractive)"),
+        ("vit5", "ViT5-Base (Abstractive)"),
+    ]:
+        entry = metrics["results"].get(key)
+        if not isinstance(entry, dict):
+            continue
+        f1 = entry.get("mean_f1_percent", {})
+        rep = entry.get("sentence_repetition")
+        rep_str = (
+            f"{rep['repeated_sample_percent']:.2f}%"
+            if isinstance(rep, dict) and "repeated_sample_percent" in rep
+            else "—"
+        )
+        rows.append([
+            label,
+            f"{f1.get('rouge1', 0.0):.2f}",
+            f"{f1.get('rouge2', 0.0):.2f}",
+            f"{f1.get('rougeL', 0.0):.2f}",
+            rep_str,
+        ])
+    return rows
 
 
 def source_notice(result):
@@ -26,6 +116,7 @@ class DemoSummarizer:
         self.config_path = config_path
         self.generation_config_path = generation_config_path
         self.textrank_config = None
+        self.last_timing = {}
         if textrank_config is not None:
             self.textrank_config = textrank_config.copy()
         try:
@@ -80,6 +171,7 @@ class DemoSummarizer:
         return result["summary"], message
 
     def compare(self, text):
+        self.last_timing = {}
         if text is None:
             return "", "", "Vui lòng nhập văn bản cần tóm tắt."
         if normalize_text(text) == "":
@@ -123,6 +215,10 @@ class DemoSummarizer:
         if not textrank_result["converged"]:
             notices.append("TextRank đã đạt giới hạn vòng lặp trước khi hội tụ.")
         message = "\n".join(notices)
+        self.last_timing = {
+            "textrank_seconds": textrank_result.get("elapsed_seconds"),
+            "vit5_seconds": vit5_result.get("elapsed_seconds"),
+        }
         return textrank_result["summary"], vit5_result["summary"], message
 
 
@@ -157,47 +253,110 @@ class DemoExamples:
             message = notice
         return reference, textrank_summary, vit5_summary, message
 
+    def summarize_with_metrics(self, text, example_id):
+        reference, textrank_summary, vit5_summary, message = self.summarize(text, example_id)
+        timing = getattr(self.summarizer, "last_timing", {}) or {}
+        metrics_rows = format_sample_metrics(
+            text,
+            textrank_summary,
+            vit5_summary,
+            reference=reference,
+            textrank_seconds=timing.get("textrank_seconds"),
+            vit5_seconds=timing.get("vit5_seconds"),
+        )
+        return reference, textrank_summary, vit5_summary, metrics_rows, message
 
-def create_demo(summarizer, examples=None, run_id=""):
-    import gradio as gr
+    def select_with_metrics(self, example_id):
+        source, reference, textrank_summary, vit5_summary, message = self.select(example_id)
+        return source, reference, textrank_summary, vit5_summary, [], message
+
+    def edit_with_metrics(self):
+        reference, textrank_summary, vit5_summary, message = self.edit()
+        return reference, textrank_summary, vit5_summary, [], message
+
+    def clear(self):
+        return "", "", "", "", "", [], "Không có bản tóm tắt tham chiếu cho văn bản tự nhập."
+
+
+def create_demo(summarizer, examples=None, run_id="", overview=None):
+    import gradio as gr  # type: ignore[import-not-found]
 
     if examples is None:
         examples = []
+    if overview is None:
+        overview = {}
     handler = DemoExamples(summarizer, examples)
+    eval_metrics = overview.get("metrics") or {}
+    loss_plot_path = overview.get("loss_plot_path")
+
     with gr.Blocks(title="Tóm tắt văn bản tiếng Việt") as demo:
-        gr.Markdown("# Tóm tắt văn bản tiếng Việt")
+        gr.Markdown("# Tóm tắt văn bản tiếng Việt — TextRank vs ViT5")
         gr.Markdown(
             "Chọn mẫu WikiLingua để đối chiếu với bản tham chiếu, hoặc nhập văn bản riêng. "
-            "Bản tham chiếu chỉ dùng để so sánh, không được đưa vào mô hình khi sinh tóm tắt."
+            "Bản tham chiếu chỉ dùng để so sánh và tính ROUGE."
         )
         if run_id != "":
-            gr.Markdown("Model fine-tune: `" + run_id + "` · checkpoint **best**")
+            gr.Markdown(f"Model: `{run_id}`")
+
         choice = gr.Dropdown(label="Chọn mẫu validation hoặc văn bản tự nhập", choices=handler.choices, value="")
-        source = gr.Textbox(label="Văn bản cần tóm tắt", lines=10)
-        submit = gr.Button("Tóm tắt văn bản", variant="primary")
+        source = gr.Textbox(label="Văn bản cần tóm tắt", lines=8)
+        with gr.Row():
+            submit = gr.Button("Tóm tắt văn bản", variant="primary", scale=4)
+            clear_btn = gr.Button("Xóa", variant="secondary", scale=1)
         with gr.Row():
             textrank_summary = gr.Textbox(label="TextRank — tóm tắt trích xuất", lines=6, interactive=False)
             vit5_summary = gr.Textbox(label="ViT5 — tóm tắt sinh văn bản", lines=6, interactive=False)
-        reference = gr.Textbox(label="Bản tóm tắt tham chiếu — WikiLingua", lines=5, interactive=False)
+        sample_metrics = gr.Dataframe(
+            headers=SAMPLE_METRIC_HEADERS,
+            value=[],
+            label="So sánh chỉ số trực tiếp cho mẫu hiện tại",
+            interactive=False,
+        )
+        reference = gr.Textbox(label="Bản tóm tắt tham chiếu — WikiLingua", lines=4, interactive=False)
         message = gr.Textbox(
             label="Thông báo", lines=2, interactive=False,
             value="Không có bản tóm tắt tham chiếu cho văn bản tự nhập.",
         )
+
+        overview_rows = build_overview_rows(eval_metrics)
+        has_plot = loss_plot_path is not None and Path(loss_plot_path).is_file()
+        if overview_rows or has_plot:
+            gr.Markdown("---\n## Tổng quan huấn luyện & Kết quả đánh giá trên tập Test")
+            with gr.Row():
+                if overview_rows:
+                    gr.Dataframe(
+                        headers=TEST_METRIC_HEADERS,
+                        value=overview_rows,
+                        label="Kết quả tổng hợp trên toàn bộ tập Test",
+                        interactive=False,
+                    )
+                if has_plot:
+                    gr.Image(
+                        value=str(loss_plot_path),
+                        label="Biểu đồ Training & Validation Loss",
+                        interactive=False,
+                    )
+
         choice.change(
-            fn=handler.select,
+            fn=handler.select_with_metrics,
             inputs=choice,
-            outputs=[source, reference, textrank_summary, vit5_summary, message],
+            outputs=[source, reference, textrank_summary, vit5_summary, sample_metrics, message],
         )
         source.input(
-            fn=handler.edit,
+            fn=handler.edit_with_metrics,
             inputs=None,
-            outputs=[reference, textrank_summary, vit5_summary, message],
+            outputs=[reference, textrank_summary, vit5_summary, sample_metrics, message],
         )
         submit.click(
-            fn=handler.summarize,
+            fn=handler.summarize_with_metrics,
             inputs=[source, choice],
-            outputs=[reference, textrank_summary, vit5_summary, message],
+            outputs=[reference, textrank_summary, vit5_summary, sample_metrics, message],
             concurrency_limit=1,
+        )
+        clear_btn.click(
+            fn=handler.clear,
+            inputs=None,
+            outputs=[choice, source, reference, textrank_summary, vit5_summary, sample_metrics, message],
         )
     demo.queue(default_concurrency_limit=1)
     return demo

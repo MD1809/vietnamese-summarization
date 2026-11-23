@@ -5,7 +5,12 @@ import tempfile
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
-from app.gradio_app import DemoSummarizer, DemoExamples
+from app.gradio_app import (
+    DemoExamples,
+    DemoSummarizer,
+    build_overview_rows,
+    format_sample_metrics,
+)
 from app.demo_data import select_completed_run, load_validation_examples
 
 
@@ -324,3 +329,62 @@ class DemoDataTests(unittest.TestCase):
                     summary_path.write_text(json.dumps({**summary, **changes}), encoding="utf-8")
                     with self.assertRaises(ValueError):
                         select_completed_run(root, profile["run_id"])
+
+
+class DemoMetricsDisplayTests(unittest.TestCase):
+    def fake_scores(self, reference, summary):
+        val = 1.0 if reference == summary else 0.5
+        return {
+            "rouge1": {"precision": val, "recall": val, "f1": val},
+            "rouge2": {"precision": val, "recall": val, "f1": val},
+            "rougeL": {"precision": val, "recall": val, "f1": val},
+        }
+
+    def test_sample_metrics_with_and_without_reference(self):
+        with patch("app.gradio_app.score_summary", side_effect=self.fake_scores):
+            with_ref = format_sample_metrics(
+                "một hai ba bốn năm sáu bảy tám chín mười",
+                "một hai ba bốn",
+                "một hai",
+                reference="một hai",
+                textrank_seconds=0.05,
+                vit5_seconds=1.25,
+            )
+        self.assertEqual(len(with_ref), 2)
+        self.assertEqual(with_ref[0], ["TextRank", 4, "40.0%", "0.05", "50.00", "50.00", "50.00"])
+        self.assertEqual(with_ref[1], ["ViT5", 2, "20.0%", "1.25", "100.00", "100.00", "100.00"])
+
+        no_ref = format_sample_metrics("một hai ba bốn", "một hai", "một", reference="")
+        self.assertEqual(no_ref[0][4:], ["—", "—", "—"])
+        self.assertEqual(no_ref[1][4:], ["—", "—", "—"])
+
+    def test_build_overview_rows_reads_test_metrics(self):
+        metrics = {
+            "results": {
+                "textrank": {
+                    "mean_f1_percent": {"rouge1": 19.98, "rouge2": 8.58, "rougeL": 13.67},
+                    "sentence_repetition": {"repeated_sample_percent": 0.0},
+                },
+                "vit5": {
+                    "mean_f1_percent": {"rouge1": 37.17, "rouge2": 19.77, "rougeL": 30.27},
+                    "sentence_repetition": {"repeated_sample_percent": 0.0},
+                },
+            }
+        }
+        rows = build_overview_rows(metrics)
+        self.assertEqual(rows, [
+            ["TextRank (Extractive)", "19.98", "8.58", "13.67", "0.00%"],
+            ["ViT5-Base (Abstractive)", "37.17", "19.77", "30.27", "0.00%"],
+        ])
+
+    def test_demo_examples_summarize_with_metrics_and_clear(self):
+        summarizer = Mock()
+        summarizer.compare.return_value = ("một hai", "một", "")
+        summarizer.last_timing = {"textrank_seconds": 0.02, "vit5_seconds": 0.5}
+        handler = DemoExamples(summarizer, [{"id": "v1", "document": "một hai ba bốn", "summary": "một"}])
+        with patch("app.gradio_app.score_summary", side_effect=self.fake_scores):
+            reference, tr, vit5, rows, msg = handler.summarize_with_metrics("một hai ba bốn", "v1")
+        self.assertEqual((reference, tr, vit5, msg), ("một", "một hai", "một", ""))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1][0], "ViT5")
+        self.assertEqual(handler.clear()[:6], ("", "", "", "", "", []))
