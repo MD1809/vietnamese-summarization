@@ -113,7 +113,7 @@ class TextRankTests(unittest.TestCase):
         self.assertEqual(result["used_input_ids"], source["used_input_ids"])
         self.assertTrue(result["was_truncated"])
         self.assertNotIn("CÂU_NGOÀI_NGUỒN", result["summary"])
-        self.assertLessEqual(result["summary_token_count"], 128)
+        self.assertLessEqual(result["summary_token_count"], load_train_config()["max_target_length"])
 
     def test_whole_sentence_selection_skips_oversized_sentence(self):
         result = self.summarize_with_budget("Đậu cây xanh đẹp tốt. Đậu xanh. Sách mới.", 2)

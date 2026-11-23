@@ -59,6 +59,12 @@ class TensorExample:
     def __getitem__(self, index):
         return TensorExample(self.values[index], shape=(len(self.values[index]),))
 
+    def __ne__(self, other):
+        count = sum(1 for row in self.values for value in row if value != other)
+        result = Mock()
+        result.sum.return_value.item.return_value = count
+        return result
+
 
 class NoGradientExample:
     def __init__(self, state):
@@ -110,6 +116,7 @@ class ForwardTests(unittest.TestCase):
             if tensor.shape == ():
                 finite = finite and math.isfinite(tensor.item())
             result = Mock()
+            result.item.return_value = finite
             result.all.return_value.item.return_value = finite
             return result
 
@@ -227,13 +234,14 @@ class ForwardTests(unittest.TestCase):
         with patch.dict(sys.modules, modules):
             with self.assertRaises(RuntimeError):
                 load_vit5_model()
+        torch_module.cuda.is_available.return_value = True
         config = json.loads(Path("configs/train.json").read_text(encoding="utf-8"))
-        config["precision"] = "fp16"
+        config["precision"] = "int8"
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             path.write_text(json.dumps(config), encoding="utf-8")
             with patch.dict(sys.modules, modules):
-                with self.assertRaisesRegex(ValueError, "fp32"):
+                with self.assertRaisesRegex(ValueError, "precision"):
                     load_vit5_model(path)
         auto.from_pretrained.assert_not_called()
 
@@ -277,13 +285,30 @@ class OptimizationTests(unittest.TestCase):
 
 
     def test_optimizer_uses_approved_configuration(self):
-        torch_module = types.SimpleNamespace(optim=types.SimpleNamespace(AdamW=Mock()))
+        torch_module = types.SimpleNamespace(
+            nn=types.SimpleNamespace(LayerNorm=object),
+            optim=types.SimpleNamespace(AdamW=Mock()),
+        )
+        trainer_pt_utils = types.SimpleNamespace(
+            get_parameter_names=Mock(return_value=["encoder.weight"]),
+        )
+        weight = types.SimpleNamespace(requires_grad=True)
+        bias = types.SimpleNamespace(requires_grad=True)
         model = Mock()
-        with patch.dict(sys.modules, {"torch": torch_module}):
+        model.named_parameters.return_value = [("encoder.weight", weight), ("encoder.bias", bias)]
+        modules = {
+            "torch": torch_module,
+            "transformers": types.SimpleNamespace(trainer_pt_utils=trainer_pt_utils),
+            "transformers.trainer_pt_utils": trainer_pt_utils,
+        }
+        with patch.dict(sys.modules, modules):
             optimizer = create_optimizer(model)
         torch_module.optim.AdamW.assert_called_once_with(
-            model.parameters.return_value,
-            lr=0.00005,
+            [
+                {"params": [weight], "weight_decay": 0.01},
+                {"params": [bias], "weight_decay": 0.0},
+            ],
+            lr=1e-05,
             weight_decay=0.01,
             foreach=False,
         )
@@ -389,8 +414,11 @@ class CheckpointTests(unittest.TestCase):
 
     def examples(self):
         config = json.loads(Path("configs/train.json").read_text(encoding="utf-8"))
+        config["precision"] = "fp32"
+        config["lr_scheduler_type"] = "constant"
+        config["warmup_ratio"] = 0.0
         optimizer_state = {
-            "param_groups": [{"lr": 0.00005, "params": [0]}],
+            "param_groups": [{"lr": 1e-05, "params": [0]}],
             "state": {0: {
                 "step": self.tensor(1),
                 "exp_avg": self.tensor(0.2),
@@ -433,12 +461,14 @@ class CheckpointTests(unittest.TestCase):
     def test_save_contains_optimizer_progress_config_rng_and_refuses_overwrite(self):
         modules, saved, model, tokenizer, optimizer = self.examples()
         with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "train.json"
+            config_path.write_text(json.dumps(saved["train_config"]), encoding="utf-8")
             target = Path(directory) / "last"
             with patch.dict(sys.modules, modules):
                 with patch("src.train.capture_random_state", return_value=saved["random_state"]):
-                    save_training_checkpoint(model, tokenizer, optimizer, target, saved["progress"])
+                    save_training_checkpoint(model, tokenizer, optimizer, target, saved["progress"], config_path)
                     with self.assertRaises(FileExistsError):
-                        save_training_checkpoint(model, tokenizer, optimizer, target, saved["progress"])
+                        save_training_checkpoint(model, tokenizer, optimizer, target, saved["progress"], config_path)
         model.save_pretrained.assert_called_once_with(target, safe_serialization=True)
         tokenizer.save_pretrained.assert_called_once_with(target)
         payload, state_path = modules["torch"].save.call_args.args
@@ -447,10 +477,13 @@ class CheckpointTests(unittest.TestCase):
 
     def test_load_is_local_restores_optimizer_counters_and_rng(self):
         modules, saved, model, tokenizer, optimizer = self.examples()
-        with patch.dict(sys.modules, modules):
-            with patch("src.train.create_optimizer", return_value=optimizer):
-                with patch("src.train.restore_random_state") as restore:
-                    result = load_training_checkpoint("example/last")
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "train.json"
+            config_path.write_text(json.dumps(saved["train_config"]), encoding="utf-8")
+            with patch.dict(sys.modules, modules):
+                with patch("src.train.create_optimizer", return_value=optimizer):
+                    with patch("src.train.restore_random_state") as restore:
+                        result = load_training_checkpoint("example/last", config_path)
         self.assertIs(result[0], model)
         self.assertIs(result[1], tokenizer)
         self.assertIs(result[2], optimizer)
@@ -468,20 +501,27 @@ class CheckpointTests(unittest.TestCase):
 
     def test_load_rejects_changed_configuration_before_loading_model(self):
         modules, saved, model, tokenizer, optimizer = self.examples()
-        saved["train_config"]["learning_rate"] = 0.001
-        with patch.dict(sys.modules, modules):
-            with self.assertRaisesRegex(ValueError, "configuration does not match"):
-                load_training_checkpoint("example/last")
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "train.json"
+            config_path.write_text(json.dumps(saved["train_config"]), encoding="utf-8")
+            saved["train_config"] = copy.deepcopy(saved["train_config"])
+            saved["train_config"]["learning_rate"] = 0.001
+            with patch.dict(sys.modules, modules):
+                with self.assertRaisesRegex(ValueError, "configuration does not match"):
+                    load_training_checkpoint("example/last", config_path)
         modules["transformers"].AutoModelForSeq2SeqLM.from_pretrained.assert_not_called()
 
     def test_load_rejects_optimizer_tensor_mismatch(self):
         modules, saved, model, tokenizer, optimizer = self.examples()
         modules["torch"].equal.return_value = False
-        with patch.dict(sys.modules, modules):
-            with patch("src.train.create_optimizer", return_value=optimizer):
-                with patch("src.train.restore_random_state") as restore:
-                    with self.assertRaisesRegex(ValueError, "state tensor was not restored"):
-                        load_training_checkpoint("example/last")
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "train.json"
+            config_path.write_text(json.dumps(saved["train_config"]), encoding="utf-8")
+            with patch.dict(sys.modules, modules):
+                with patch("src.train.create_optimizer", return_value=optimizer):
+                    with patch("src.train.restore_random_state") as restore:
+                        with self.assertRaisesRegex(ValueError, "state tensor was not restored"):
+                            load_training_checkpoint("example/last", config_path)
         restore.assert_not_called()
 
 
@@ -611,13 +651,25 @@ class TrainingDeviceFixture:
         model.parameters.side_effect = parameters
         cuda = types.SimpleNamespace(
             synchronize=Mock(),
+            reset_peak_memory_stats=Mock(),
+            max_memory_allocated=Mock(return_value=1024**3),
         )
         return types.SimpleNamespace(cuda=cuda, float32="float32"), model
 
 
 class AccumulationTests(unittest.TestCase):
+    def fp32_config_path(self, directory):
+        config = json.loads(Path("configs/train.json").read_text(encoding="utf-8"))
+        config["precision"] = "fp32"
+        config["lr_scheduler_type"] = "constant"
+        config["warmup_ratio"] = 0.0
+        path = Path(directory) / "train.json"
+        path.write_text(json.dumps(config), encoding="utf-8")
+        return path
+
     def examples(self, counts):
         torch_module, model, batch, optimizer, parameter, loss, events = OptimizationTests().examples()
+        optimizer.param_groups = [{"lr": 1e-05}]
 
         def parameters():
             return iter([parameter])
@@ -637,6 +689,7 @@ class AccumulationTests(unittest.TestCase):
             batches.append(current)
             current_loss = Mock()
             current_loss.shape = ()
+            current_loss.ndim = 0
             current_loss.finite = True
             current_loss.requires_grad = True
             current_loss.item.return_value = 2.0 + index
@@ -651,8 +704,10 @@ class AccumulationTests(unittest.TestCase):
 
     def test_group_uses_token_weights_and_only_one_update_after_all_backwards(self):
         torch_module, model, batches, optimizer, parameter, losses, events = self.examples([1, 3])
-        with patch.dict(sys.modules, {"torch": torch_module}):
-            report = train_accumulated_group(model, batches, optimizer)
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = self.fp32_config_path(directory)
+            with patch.dict(sys.modules, {"torch": torch_module}):
+                report = train_accumulated_group(model, batches, optimizer, config_path)
         losses[0].__mul__.assert_called_once_with(0.25)
         losses[1].__mul__.assert_called_once_with(0.75)
         self.assertEqual(report["token_weighted_group_loss"], 2.75)
@@ -660,16 +715,19 @@ class AccumulationTests(unittest.TestCase):
         for call in events.mock_calls:
             if call[0] in ["zero_grad", "backward_0", "backward_1", "clip", "step"]:
                 operations.append(call[0])
-        self.assertEqual(operations, ["zero_grad", "backward_0", "backward_1", "clip", "step"])
-        optimizer.zero_grad.assert_called_once_with(set_to_none=True)
+        self.assertEqual(operations, ["zero_grad", "backward_0", "backward_1", "clip", "step", "zero_grad"])
+        self.assertEqual(optimizer.zero_grad.call_count, 2)
+        optimizer.zero_grad.assert_called_with(set_to_none=True)
         optimizer.step.assert_called_once_with()
         self.assertEqual(report["gradient_norm_after_clipping"], 0.5)
         self.assertEqual(torch_module.nn.utils.clip_grad_norm_.call_args.kwargs["max_norm"], 1.0)
 
     def test_single_batch_tail_is_not_divided_by_eight(self):
         torch_module, model, batches, optimizer, parameter, losses, events = self.examples([3])
-        with patch.dict(sys.modules, {"torch": torch_module}):
-            report = train_accumulated_group(model, batches, optimizer)
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = self.fp32_config_path(directory)
+            with patch.dict(sys.modules, {"torch": torch_module}):
+                report = train_accumulated_group(model, batches, optimizer, config_path)
         losses[0].__mul__.assert_called_once_with(1.0)
         self.assertEqual(report["loss_weights"], [1.0])
         self.assertEqual(report["optimizer_steps"], 1)
@@ -681,17 +739,21 @@ class AccumulationTests(unittest.TestCase):
                 losses[0].item.return_value = float("nan")
             else:
                 parameter.grad.finite = False
-            with patch.dict(sys.modules, {"torch": torch_module}):
-                with self.assertRaisesRegex(ValueError, "NaN or Inf"):
-                    train_accumulated_group(model, batches, optimizer)
+            with tempfile.TemporaryDirectory() as directory:
+                config_path = self.fp32_config_path(directory)
+                with patch.dict(sys.modules, {"torch": torch_module}):
+                    with self.assertRaisesRegex(ValueError, "NaN or Inf"):
+                        train_accumulated_group(model, batches, optimizer, config_path)
             optimizer.step.assert_not_called()
 
     def test_invalid_norm_after_clipping_blocks_optimizer_step(self):
         torch_module, model, batches, optimizer, parameter, losses, events = self.examples([3])
         parameter.grad.detach.return_value.norm.return_value.item.return_value = 2.0
-        with patch.dict(sys.modules, {"torch": torch_module}):
-            with self.assertRaisesRegex(ValueError, "after clipping"):
-                train_accumulated_group(model, batches, optimizer)
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = self.fp32_config_path(directory)
+            with patch.dict(sys.modules, {"torch": torch_module}):
+                with self.assertRaisesRegex(ValueError, "after clipping"):
+                    train_accumulated_group(model, batches, optimizer, config_path)
         optimizer.step.assert_not_called()
 
 
@@ -744,7 +806,7 @@ class EpochCheckpointTests(unittest.TestCase):
             "train_loader_state": capture_train_loader_state(loader),
         }
 
-        def write_pending(model, tokenizer, optimizer, target, progress, config_path, train_loader):
+        def write_pending(model, tokenizer, optimizer, target, progress, config_path, train_loader, scheduler=None, scaler=None):
             target.mkdir()
             for name in ["config.json", "model.safetensors", "tokenizer_config.json", "spiece.model", "training_state.pt"]:
                 (target / name).write_bytes(b"checkpoint file")
@@ -767,9 +829,12 @@ class EpochCheckpointTests(unittest.TestCase):
     def test_loader_checkpoint_requires_loader_on_resume(self):
         modules, saved, model, tokenizer, optimizer = CheckpointTests().examples()
         saved["train_loader_state"] = {"example": "state"}
-        with patch.dict(sys.modules, modules):
-            with self.assertRaisesRegex(ValueError, "requires the training DataLoader"):
-                load_training_checkpoint("example/last")
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "train.json"
+            config_path.write_text(json.dumps(saved["train_config"]), encoding="utf-8")
+            with patch.dict(sys.modules, modules):
+                with self.assertRaisesRegex(ValueError, "requires the training DataLoader"):
+                    load_training_checkpoint("example/last", config_path)
         modules["transformers"].AutoModelForSeq2SeqLM.from_pretrained.assert_not_called()
 
     def test_resume_can_find_previous_checkpoint_after_interrupted_directory_swap(self):
@@ -925,7 +990,7 @@ class FullTrainingTests(unittest.TestCase):
         torch_module, model = TrainingDeviceFixture().examples()
         sizes = []
 
-        def train_group(model, group, optimizer, config_path):
+        def train_group(model, group, optimizer, config_path, scheduler=None, scaler=None):
             sizes.append(len(group))
             step = Mock()
             step.item.return_value = len(sizes)
@@ -933,16 +998,21 @@ class FullTrainingTests(unittest.TestCase):
             ids = []
             for batch in group:
                 ids.extend(batch["sample_ids"])
-            return {"sample_ids": ids, "total_valid_target_tokens": len(group), "token_weighted_group_loss": float(len(sizes))}
+            return {
+                "sample_ids": ids,
+                "total_valid_target_tokens": len(group),
+                "token_weighted_group_loss": float(len(sizes)),
+                "optimizer_steps": 1,
+            }
 
         with patch.dict(sys.modules, {"torch": torch_module}):
             with patch("src.train.train_accumulated_group", side_effect=train_group):
                 report = train_epoch(model, loader, optimizer)
-        self.assertEqual(sizes, [8, 2])
-        self.assertEqual(report["global_step"], 2)
+        self.assertEqual(sizes, [4, 4, 2])
+        self.assertEqual(report["global_step"], 3)
         self.assertEqual(report["train_sample_count"], 10)
         self.assertEqual(report["train_valid_target_tokens"], 10)
-        self.assertEqual(report["train_loss"], 1.2)
+        self.assertAlmostEqual(report["train_loss"], 1.8)
 
 
 if __name__ == "__main__":
