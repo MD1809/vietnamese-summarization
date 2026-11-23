@@ -84,7 +84,7 @@ class FullDatasetTests(unittest.TestCase):
             changed["scope"] = "different-selection"
             manifest_path.write_text(json.dumps(changed), encoding="utf-8")
             previous_bytes = manifest_path.read_bytes()
-            with self.assertRaisesRegex(RuntimeError, "differs from the saved selection"):
+            with self.assertRaisesRegex(RuntimeError, "khác với bản đã lưu"):
                 exec(compile(codes[8], str(NOTEBOOK), "exec"), namespace)
             self.assertEqual(manifest_path.read_bytes(), previous_bytes)
 
