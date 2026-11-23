@@ -8,6 +8,8 @@
 /data/tokenized/
 /checkpoints/
 /outputs/
+predictions.jsonl
+*_predictions.jsonl
 
 # Model weights and training state
 *.pt
